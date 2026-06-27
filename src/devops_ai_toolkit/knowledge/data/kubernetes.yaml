@@ -1,0 +1,173 @@
+- id: k8s.crashloopbackoff
+  technology: kubernetes
+  title: "Pod in CrashLoopBackOff"
+  summary: >-
+    A container starts, exits, and Kubernetes restarts it with exponential
+    backoff. The pod never reaches a stable Running state.
+  applies_to: [log, kubernetes_manifest, command_output, error_string]
+  match:
+    any_of:
+      - "CrashLoopBackOff"
+      - "Back-off restarting failed container"
+    weight: 0.8
+  root_causes:
+    - title: "Application exits immediately on startup"
+      description: >-
+        The container's main process crashes or returns non-zero right after
+        start — a config error, missing env var, failed dependency, or bad command.
+      confidence: 0.7
+      category: application
+    - title: "Failing liveness probe restarts a healthy app"
+      description: >-
+        An over-aggressive livenessProbe (short timeout / wrong path or port)
+        kills the container before it finishes starting.
+      confidence: 0.45
+      category: configuration
+    - title: "Missing config, secret, or mounted file"
+      description: >-
+        The app requires a ConfigMap/Secret/volume that is absent or misnamed and
+        aborts during initialization.
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "kubectl describe pod <pod> -n <namespace>"
+      explanation: "Shows recent events, restart count, last state and exit code."
+      expected_output: "Last State: Terminated, Reason: Error, Exit Code: 1 plus Events."
+      platform: "any kubectl client"
+    - command: "kubectl logs <pod> -n <namespace> --previous"
+      explanation: "Prints logs from the previous crashed container — where the real error is."
+      expected_output: "The application's stack trace or fatal error message."
+    - command: "kubectl get events -n <namespace> --sort-by=.lastTimestamp"
+      explanation: "Surfaces scheduling, probe and image events around the crash."
+      expected_output: "Liveness probe failures, OOMKilled, or FailedMount events."
+  suggested_fixes:
+    - title: "Fix the startup failure the previous-container logs reveal"
+      description: >-
+        Read --previous logs, correct the missing env var / config / dependency,
+        and redeploy. Reproduce locally with the same image and args first.
+    - title: "Relax or delay the liveness probe"
+      description: "Add initialDelaySeconds/failureThreshold so slow starts are not killed."
+      snippet: |
+        livenessProbe:
+          httpGet: { path: /healthz, port: 8080 }
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          failureThreshold: 3
+  references:
+    - title: "CrashLoopBackOff troubleshooting guide"
+      url: "https://devopsaitoolkit.com/blog/kubernetes-error-crashloopbackoff"
+      source: "devopsaitoolkit"
+  best_practices:
+    - "Make containers fail fast and log the reason to stdout/stderr."
+    - "Separate readiness from liveness so slow starts don't trigger restarts."
+  prevention:
+    - "Validate required config/secrets in CI before deploy."
+    - "Set sensible initialDelaySeconds on probes for your real startup time."
+  tags: [pods, restart, probes]
+
+- id: k8s.imagepullbackoff
+  technology: kubernetes
+  title: "ImagePullBackOff / ErrImagePull"
+  summary: >-
+    The kubelet cannot pull the container image, so the pod is stuck and retries
+    with backoff.
+  applies_to: [log, kubernetes_manifest, command_output, error_string]
+  match:
+    any_of:
+      - "ImagePullBackOff"
+      - "ErrImagePull"
+      - "manifest unknown"
+      - "pull access denied"
+    weight: 0.82
+  root_causes:
+    - title: "Wrong image name or tag"
+      description: "A typo, a non-existent tag, or a missing :tag (defaulting to a missing :latest)."
+      confidence: 0.6
+      category: configuration
+    - title: "Missing or invalid registry credentials"
+      description: "A private registry needs an imagePullSecret that is absent, wrong, or expired."
+      confidence: 0.55
+      category: authentication
+    - title: "Registry unreachable or rate-limited"
+      description: "DNS, network policy, or Docker Hub anonymous pull limits block the pull."
+      confidence: 0.4
+      category: network
+  diagnostic_commands:
+    - command: "kubectl describe pod <pod> -n <namespace>"
+      explanation: "The Events section shows the exact pull error (auth, not found, timeout)."
+      expected_output: "Failed to pull image ... : <specific reason>."
+    - command: "kubectl get secret <pull-secret> -n <namespace> -o yaml"
+      explanation: "Confirms the image pull secret exists and is the dockerconfigjson type."
+      expected_output: "type: kubernetes.io/dockerconfigjson"
+  suggested_fixes:
+    - title: "Correct the image reference"
+      description: "Verify the repository and tag exist; pull it manually with the same credentials."
+    - title: "Attach a valid imagePullSecret"
+      description: "Create a docker-registry secret and reference it on the pod/service account."
+      snippet: |
+        imagePullSecrets:
+          - name: my-registry-secret
+  references:
+    - title: "ImagePullBackOff troubleshooting guide"
+      url: "https://devopsaitoolkit.com/blog/kubernetes-error-imagepullbackoff"
+      source: "devopsaitoolkit"
+  best_practices:
+    - "Pin images to immutable tags or digests."
+    - "Use the registry's dependency proxy/mirror to avoid rate limits."
+  prevention:
+    - "Validate image references and pull secrets in CI."
+  tags: [registry, images, auth]
+
+- id: k8s.oomkilled
+  technology: kubernetes
+  title: "Container OOMKilled (exit code 137)"
+  summary: >-
+    The kernel killed a container for exceeding its memory limit; Kubernetes
+    reports OOMKilled with exit code 137.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "OOMKilled"
+      - "exit code 137"
+      - "Out of memory: Killed process"
+    weight: 0.8
+  root_causes:
+    - title: "Memory limit lower than real working set"
+      description: "The container's resources.limits.memory is below what the app needs under load."
+      confidence: 0.65
+      category: resources
+    - title: "Memory leak or unbounded cache"
+      description: "The process grows without bound until it hits the cgroup limit."
+      confidence: 0.45
+      category: application
+    - title: "Runtime not cgroup-aware"
+      description: "A JVM/Node heap configured larger than the container limit is OOMKilled."
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "kubectl get pod <pod> -n <namespace> -o jsonpath='{.status.containerStatuses[*].lastState}'"
+      explanation: "Confirms the last termination reason was OOMKilled."
+      expected_output: '{"terminated":{"reason":"OOMKilled","exitCode":137}}'
+    - command: "kubectl top pod <pod> -n <namespace>"
+      explanation: "Shows live memory usage versus the configured limit (needs metrics-server)."
+      expected_output: "Memory usage approaching or at the limit."
+  suggested_fixes:
+    - title: "Raise the limit or fix the leak"
+      description: "Right-size requests/limits from observed usage, or fix the leak; make runtimes cgroup-aware."
+      snippet: |
+        resources:
+          requests: { memory: "256Mi" }
+          limits:   { memory: "512Mi" }
+  references:
+    - title: "OOMKilled troubleshooting guide"
+      url: "https://devopsaitoolkit.com/blog/kubernetes-error-oomkilled"
+      source: "devopsaitoolkit"
+  warnings:
+    - message: "Blindly raising limits can mask a real memory leak and exhaust node memory."
+      severity: medium
+  best_practices:
+    - "Set memory requests and limits based on observed P95 usage."
+    - "Make JVM/Node heap sizing cgroup-aware (e.g. -XX:MaxRAMPercentage)."
+  prevention:
+    - "Load-test to find the real working set before setting limits."
+  tags: [memory, resources, oom]

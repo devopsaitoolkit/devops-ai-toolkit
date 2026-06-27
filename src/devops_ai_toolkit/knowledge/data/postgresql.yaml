@@ -1,0 +1,369 @@
+- id: postgresql.connection_refused
+  technology: postgresql
+  title: "Could not connect / connection refused"
+  summary: >-
+    A client cannot reach the PostgreSQL server: the connection is actively
+    refused or times out, so no session is established.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "could not connect to server"
+      - "connection refused"
+      - "Is the server running on host"
+      - "could not connect to server: Connection refused"
+    weight: 0.8
+  root_causes:
+    - title: "PostgreSQL is not running or not listening"
+      description: >-
+        The postgres service is stopped or crashed, so nothing is bound to the
+        port and the kernel refuses the TCP connection.
+      confidence: 0.65
+      category: availability
+    - title: "Wrong host or port"
+      description: >-
+        The client targets the wrong host/port; the server listens on a Unix
+        socket or different port than the client expects.
+      confidence: 0.5
+      category: configuration
+    - title: "listen_addresses limited to localhost"
+      description: >-
+        listen_addresses is 'localhost' (or unset), so remote clients cannot
+        reach the server even though it is up.
+      confidence: 0.45
+      category: configuration
+    - title: "Firewall or network policy blocks the port"
+      description: >-
+        A host firewall, security group, or network policy drops traffic to
+        TCP 5432 before it reaches postgres.
+      confidence: 0.4
+      category: network
+  diagnostic_commands:
+    - command: "systemctl status postgresql"
+      explanation: "Confirms whether the PostgreSQL service is active and running."
+      expected_output: "Active: active (running) when healthy."
+      platform: "database host"
+    - command: "ss -ltnp | grep 5432"
+      explanation: "Shows whether anything is listening on the PostgreSQL port and on which address."
+      expected_output: "A LISTEN entry on 0.0.0.0:5432 or 127.0.0.1:5432."
+      platform: "database host"
+    - command: "pg_isready -h <host> -p 5432"
+      explanation: "Probes the server for connection readiness without authenticating."
+      expected_output: "<host>:5432 - accepting connections"
+  suggested_fixes:
+    - title: "Start the server and verify it listens"
+      description: >-
+        Start/restart PostgreSQL, then confirm it is listening on the expected
+        address and port before retrying the client.
+      snippet: |
+        sudo systemctl start postgresql
+        ss -ltnp | grep 5432
+    - title: "Allow remote connections"
+      description: >-
+        Set listen_addresses and add a pg_hba.conf rule for the client network,
+        then reload. Restrict to known CIDRs, not 0.0.0.0/0.
+      snippet: |
+        # postgresql.conf
+        listen_addresses = '*'
+        # pg_hba.conf
+        host  all  all  10.0.0.0/24  scram-sha-256
+  references:
+    - title: "PostgreSQL connection refused troubleshooting"
+      url: "https://devopsaitoolkit.com/blog/postgresql-error-connection-refused"
+      source: "devopsaitoolkit"
+    - title: "Connection settings (listen_addresses)"
+      url: "https://www.postgresql.org/docs/current/runtime-config-connection.html"
+      source: "official docs"
+  warnings:
+    - message: "Setting listen_addresses to '*' exposes the port; pair it with strict pg_hba and firewall rules."
+      severity: medium
+  best_practices:
+    - "Use pg_isready in health checks rather than opening full sessions."
+    - "Keep listen_addresses scoped and rely on pg_hba.conf for access control."
+  prevention:
+    - "Monitor the service and port with an external check."
+    - "Document the canonical host/port/socket in connection libraries."
+  tags: [connectivity, network, startup]
+
+- id: postgresql.too_many_connections
+  technology: postgresql
+  title: "FATAL: sorry, too many clients already"
+  summary: >-
+    New connections are rejected because the server reached max_connections; the
+    pool or application is exhausting available backends.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "too many connections for"
+      - "sorry, too many clients already"
+      - "remaining connection slots are reserved"
+    weight: 0.82
+  root_causes:
+    - title: "Connection leak in the application"
+      description: >-
+        The app opens connections without returning or closing them, so backends
+        accumulate until the limit is hit.
+      confidence: 0.6
+      category: application
+    - title: "No pooler in front of PostgreSQL"
+      description: >-
+        Many short-lived clients connect directly; without PgBouncer each one
+        consumes a backend slot.
+      confidence: 0.5
+      category: architecture
+    - title: "max_connections set too low for the workload"
+      description: >-
+        The configured limit is below the concurrent demand of legitimate
+        clients.
+      confidence: 0.4
+      category: configuration
+    - title: "Idle-in-transaction sessions hold slots"
+      description: >-
+        Sessions left idle in a transaction never release their backend,
+        starving new connections.
+      confidence: 0.4
+      category: application
+  diagnostic_commands:
+    - command: "psql -c \"SELECT count(*), state FROM pg_stat_activity GROUP BY state;\""
+      explanation: "Counts active, idle, and idle-in-transaction backends to find what consumes slots."
+      expected_output: "Counts per state; many idle or idle in transaction rows indicate leaks."
+    - command: "psql -c \"SHOW max_connections;\""
+      explanation: "Shows the configured connection ceiling to compare against usage."
+      expected_output: "An integer such as 100."
+  suggested_fixes:
+    - title: "Put PgBouncer in front of PostgreSQL"
+      description: >-
+        Use a transaction-pooling proxy so thousands of clients map to a small
+        pool of backends.
+      snippet: |
+        [databases]
+        app = host=127.0.0.1 port=5432 dbname=app
+        [pgbouncer]
+        pool_mode = transaction
+        max_client_conn = 1000
+        default_pool_size = 20
+    - title: "Fix leaks and bound app pools"
+      description: >-
+        Ensure connections are returned to the pool, set a sane max pool size,
+        and set idle_in_transaction_session_timeout to reap stuck sessions.
+  references:
+    - title: "Fixing too many connections in PostgreSQL"
+      url: "https://devopsaitoolkit.com/blog/postgresql-error-too-many-connections"
+      source: "devopsaitoolkit"
+    - title: "Connection limits (max_connections)"
+      url: "https://www.postgresql.org/docs/current/runtime-config-connection.html"
+      source: "official docs"
+  best_practices:
+    - "Pool connections; do not let request concurrency map 1:1 to backends."
+    - "Set idle_in_transaction_session_timeout to bound stuck transactions."
+  prevention:
+    - "Alert when active connections exceed ~80% of max_connections."
+    - "Load-test concurrency to size the pool before production."
+  tags: [connections, pooling, limits]
+
+- id: postgresql.role_does_not_exist
+  technology: postgresql
+  title: "FATAL: role does not exist"
+  summary: >-
+    Authentication fails because the login role named in the connection string
+    has not been created (or was dropped/renamed).
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "role \".*\" does not exist"
+      - "FATAL:  role"
+      - "password authentication failed for user"
+    all_of:
+      - "role"
+    weight: 0.78
+  root_causes:
+    - title: "Role was never created"
+      description: >-
+        The provisioning step that should CREATE ROLE did not run, so the login
+        the app uses is missing.
+      confidence: 0.6
+      category: provisioning
+    - title: "Username typo or wrong case"
+      description: >-
+        The connection string uses a misspelled or differently-cased name than
+        the actual role.
+      confidence: 0.45
+      category: configuration
+    - title: "Role dropped or renamed"
+      description: >-
+        A migration or cleanup removed or renamed the role that applications
+        still reference.
+      confidence: 0.4
+      category: operations
+  diagnostic_commands:
+    - command: "psql -U postgres -c \"\\du\""
+      explanation: "Lists all roles and their attributes to confirm whether the expected role exists."
+      expected_output: "A table of role names; the missing role is absent."
+    - command: "psql -U postgres -c \"SELECT rolname FROM pg_roles ORDER BY 1;\""
+      explanation: "Programmatic list of roles to compare against the connection string."
+      expected_output: "Role names one per line."
+  suggested_fixes:
+    - title: "Create the role with a login and password"
+      description: >-
+        Create the missing login role and grant it the needed database
+        privileges, matching the exact name the app uses.
+      snippet: |
+        CREATE ROLE app_user LOGIN PASSWORD 'changeme';
+        GRANT CONNECT ON DATABASE app TO app_user;
+    - title: "Correct the connection string"
+      description: "Fix the username to match an existing role; PostgreSQL identifiers are case-sensitive when quoted."
+  references:
+    - title: "PostgreSQL role does not exist fix"
+      url: "https://devopsaitoolkit.com/blog/postgresql-error-role-does-not-exist"
+      source: "devopsaitoolkit"
+    - title: "Database roles (CREATE ROLE)"
+      url: "https://www.postgresql.org/docs/current/database-roles.html"
+      source: "official docs"
+  best_practices:
+    - "Provision roles idempotently with CREATE ROLE IF NOT EXISTS patterns or migrations."
+    - "Keep role names and credentials in one source of truth shared with the app."
+  prevention:
+    - "Validate that required roles exist as part of deploy smoke tests."
+  tags: [authentication, roles, provisioning]
+
+- id: postgresql.could_not_extend_no_space
+  technology: postgresql
+  title: "Could not extend file / no space left on device"
+  summary: >-
+    PostgreSQL cannot write or grow a relation/WAL file because the data
+    filesystem is full, risking write failures and an unstartable server.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "could not extend file"
+      - "No space left on device"
+      - "could not write to file"
+      - "wrote too few bytes"
+    weight: 0.85
+  root_causes:
+    - title: "Data directory filesystem is full"
+      description: >-
+        The volume holding PGDATA reached 100% so new heap/index pages cannot be
+        allocated.
+      confidence: 0.65
+      category: storage
+    - title: "WAL accumulation from an inactive replication slot"
+      description: >-
+        An unconsumed replication slot pins WAL segments, filling pg_wal until
+        the disk is exhausted.
+      confidence: 0.5
+      category: replication
+    - title: "Bloat or unvacuumed dead tuples"
+      description: >-
+        Table/index bloat from failed autovacuum consumes far more space than
+        live data.
+      confidence: 0.4
+      category: maintenance
+    - title: "Large temp files from spilling queries"
+      description: >-
+        Sorts or hashes spill to temp files that exhaust the volume during big
+        queries.
+      confidence: 0.35
+      category: workload
+  diagnostic_commands:
+    - command: "df -h <pgdata-mount>"
+      explanation: "Confirms the data filesystem is full and which mount is affected."
+      expected_output: "Use% at or near 100%."
+      platform: "database host"
+    - command: "psql -c \"SELECT slot_name, active, pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) AS retained FROM pg_replication_slots;\""
+      explanation: "Shows replication slots and how much WAL each is retaining."
+      expected_output: "An inactive slot retaining a large amount of WAL."
+    - command: "du -sh <pgdata>/pg_wal"
+      explanation: "Measures WAL directory size to see if WAL growth is the cause."
+      expected_output: "A pg_wal directory much larger than max_wal_size."
+      platform: "database host"
+  suggested_fixes:
+    - title: "Reclaim space and drop stale slots"
+      description: >-
+        Free disk on the volume (rotate logs, remove old backups), and drop
+        inactive replication slots that pin WAL. Then restart if needed.
+      snippet: |
+        SELECT pg_drop_replication_slot('stale_slot');
+    - title: "Expand the data volume"
+      description: "Grow the underlying disk/volume and filesystem so PostgreSQL can extend files again."
+  references:
+    - title: "PostgreSQL no space left on device"
+      url: "https://devopsaitoolkit.com/blog/postgresql-error-no-space-left"
+      source: "devopsaitoolkit"
+    - title: "Reliability and the Write-Ahead Log"
+      url: "https://www.postgresql.org/docs/current/wal-intro.html"
+      source: "official docs"
+  warnings:
+    - message: "A full data disk can prevent PostgreSQL from starting; never delete files inside PGDATA manually."
+      severity: high
+  best_practices:
+    - "Monitor free space on the PGDATA and pg_wal volumes with alerts well below full."
+    - "Drop or consume replication slots promptly when a replica is decommissioned."
+  prevention:
+    - "Alert at 80% disk usage and cap max_wal_size relative to volume size."
+    - "Ensure autovacuum keeps up with the write workload."
+  tags: [storage, disk, wal, vacuum]
+
+- id: postgresql.deadlock_detected
+  technology: postgresql
+  title: "ERROR: deadlock detected"
+  summary: >-
+    Two or more transactions wait on locks held by each other; PostgreSQL aborts
+    one to break the cycle and reports a deadlock.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "deadlock detected"
+      - "Process \\d+ waits for"
+      - "deadlock_timeout"
+    weight: 0.8
+  root_causes:
+    - title: "Inconsistent lock ordering across transactions"
+      description: >-
+        Different code paths acquire the same rows/tables in different orders,
+        creating a wait cycle.
+      confidence: 0.6
+      category: application
+    - title: "Long-running transactions holding locks"
+      description: >-
+        Transactions stay open across slow work, widening the window for lock
+        contention and cycles.
+      confidence: 0.45
+      category: application
+    - title: "Hot rows updated by many concurrent writers"
+      description: >-
+        Frequent updates to the same rows (counters, queues) increase the chance
+        of overlapping lock waits.
+      confidence: 0.4
+      category: workload
+  diagnostic_commands:
+    - command: "psql -c \"SELECT pid, wait_event_type, wait_event, query FROM pg_stat_activity WHERE wait_event_type='Lock';\""
+      explanation: "Shows which sessions are currently blocked waiting on locks."
+      expected_output: "Rows with wait_event_type Lock and the blocked queries."
+    - command: "psql -c \"SELECT * FROM pg_locks WHERE NOT granted;\""
+      explanation: "Lists lock requests that are not yet granted, revealing contention."
+      expected_output: "Ungranted lock rows referencing the contended relations."
+  suggested_fixes:
+    - title: "Order lock acquisition consistently"
+      description: >-
+        Acquire rows/tables in a deterministic order across all transactions and
+        keep transactions short.
+    - title: "Retry the aborted transaction"
+      description: >-
+        Deadlocks are expected under concurrency; catch the deadlock error code
+        and retry the losing transaction with backoff.
+      snippet: |
+        # PostgreSQL deadlock SQLSTATE is 40P01 -> retry the transaction
+  references:
+    - title: "Resolving PostgreSQL deadlocks"
+      url: "https://devopsaitoolkit.com/blog/postgresql-error-deadlock-detected"
+      source: "devopsaitoolkit"
+    - title: "Explicit locking and deadlocks"
+      url: "https://www.postgresql.org/docs/current/explicit-locking.html"
+      source: "official docs"
+  best_practices:
+    - "Acquire resources in a consistent global order across the codebase."
+    - "Keep transactions short and implement deadlock-aware retries."
+  prevention:
+    - "Avoid holding locks across user think-time or network calls."
+    - "Use SELECT ... FOR UPDATE with consistent ordering for queue patterns."
+  tags: [locking, concurrency, transactions]

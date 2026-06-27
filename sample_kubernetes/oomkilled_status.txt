@@ -1,0 +1,22 @@
+$ kubectl get pod cache-worker-6b8f7d9c4-x2vlq -n cache -o jsonpath='{.status.containerStatuses[*].lastState}' | jq .
+{
+  "terminated": {
+    "containerID": "containerd://7a3b...c14d",
+    "exitCode": 137,
+    "finishedAt": "2026-06-24T16:18:02Z",
+    "reason": "OOMKilled",
+    "startedAt": "2026-06-24T16:05:11Z"
+  }
+}
+
+$ kubectl describe pod cache-worker-6b8f7d9c4-x2vlq -n cache | grep -A6 'Last State'
+    Last State:     Terminated
+      Reason:       OOMKilled
+      Exit Code:    137
+      Started:      Wed, 24 Jun 2026 16:05:11 +0000
+      Finished:     Wed, 24 Jun 2026 16:18:02 +0000
+    Restart Count:  3
+
+$ kubectl top pod cache-worker-6b8f7d9c4-x2vlq -n cache
+NAME                           CPU(cores)   MEMORY(bytes)
+cache-worker-6b8f7d9c4-x2vlq   240m         511Mi

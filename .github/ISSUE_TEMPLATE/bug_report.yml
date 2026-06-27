@@ -1,0 +1,78 @@
+name: Bug report
+description: Report something that is broken or behaving incorrectly.
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill out the
+        fields below so we can reproduce and fix the issue quickly.
+
+        Reminder: devops-ai-toolkit is a **read-only** tool. Please do not paste
+        secrets, credentials, or private infrastructure data into this report.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug, including what you expected to happen instead.
+      placeholder: "Running `devops-ai analyze` on a Terraform plan exits with a traceback instead of an analysis."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands or code you ran. Minimal, copy-pasteable steps are best.
+      placeholder: |
+        1. `devops-ai analyze --input plan.txt`
+        2. ...
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: analyzed-input
+    attributes:
+      label: The input you analyzed
+      description: >
+        A minimal, redacted sample of the log / YAML / Terraform / Kubernetes
+        manifest you fed to the tool. Strip anything sensitive first.
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "Output of `devops-ai version`."
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version (`python --version`), how you installed it, and whether an external AI provider was enabled.
+      placeholder: |
+        - OS: Ubuntu 24.04
+        - Python: 3.12.4
+        - Install: uv pip install devops-ai-toolkit
+        - AI provider: none (offline core)
+      render: markdown
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I searched existing issues and this has not been reported.
+          required: true
+        - label: I removed any secrets or sensitive data from the report.
+          required: true

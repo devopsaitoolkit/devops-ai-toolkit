@@ -1,0 +1,5 @@
+2026/06/24 21:07:55 [error] 2241#2241: *48211 connect() failed (111: Connection refused) while connecting to upstream, client: 203.0.113.42, server: app.example.com, request: "GET /api/orders HTTP/1.1", upstream: "http://10.0.6.20:3000/api/orders", host: "app.example.com"
+2026/06/24 21:07:55 [error] 2241#2241: *48211 no live upstreams while connecting to upstream, client: 203.0.113.42, server: app.example.com, request: "GET /api/orders HTTP/1.1", upstream: "http://backend/api/orders", host: "app.example.com"
+203.0.113.42 - - [24/Jun/2026:21:07:55 +0000] "GET /api/orders HTTP/1.1" 502 157 "-" "Mozilla/5.0"
+2026/06/24 21:08:01 [error] 2241#2241: *48230 upstream prematurely closed connection while reading response header from upstream, client: 203.0.113.51, server: app.example.com, request: "POST /api/checkout HTTP/1.1", upstream: "http://10.0.6.20:3000/api/checkout", host: "app.example.com"
+203.0.113.51 - - [24/Jun/2026:21:08:01 +0000] "POST /api/checkout HTTP/1.1" 502 157 "-" "curl/8.5.0"

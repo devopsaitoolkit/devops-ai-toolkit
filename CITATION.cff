@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using these metadata."
+title: "devops-ai-toolkit"
+abstract: >-
+  AI-powered, read-only DevOps troubleshooting engine for logs, YAML,
+  Terraform, Kubernetes, OpenStack and more — CLI, SDK and REST API on one
+  shared analysis engine.
+type: software
+authors:
+  - name: "DevOps AI Toolkit"
+    email: "hello@devopsaitoolkit.com"
+    website: "https://devopsaitoolkit.com"
+version: "0.1.0"
+date-released: "2026-06-27"
+license: MIT
+repository-code: "https://github.com/devopsaitoolkit/devops-ai-toolkit"
+url: "https://devopsaitoolkit.com"
+keywords:
+  - devops
+  - sre
+  - troubleshooting
+  - incident-response
+  - kubernetes
+  - terraform
+  - openstack
+  - observability
+  - artificial-intelligence

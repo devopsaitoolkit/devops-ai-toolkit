@@ -1,0 +1,265 @@
+- id: aws.access_denied
+  technology: aws
+  title: "AccessDenied / not authorized to perform"
+  summary: >-
+    An AWS API call was rejected because the calling identity lacks an IAM
+    permission, or a resource/SCP/permissions boundary denies the action.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "AccessDenied"
+      - "is not authorized to perform"
+      - "User: .* is not authorized"
+      - "explicit deny"
+    weight: 0.82
+  root_causes:
+    - title: "IAM policy missing the action or resource"
+      description: >-
+        The identity's policies do not allow the specific action on the target
+        resource ARN.
+      confidence: 0.6
+      category: authorization
+    - title: "Explicit deny from an SCP or permissions boundary"
+      description: >-
+        An Organizations SCP, permissions boundary, or resource policy
+        explicitly denies the action regardless of allows.
+      confidence: 0.45
+      category: governance
+    - title: "Wrong assumed role / identity"
+      description: >-
+        The caller is using a different role than intended (wrong profile or
+        instance role) that lacks the permission.
+      confidence: 0.4
+      category: authentication
+    - title: "Resource policy or KMS key policy blocks access"
+      description: "An S3 bucket policy or KMS key policy denies the principal even when IAM allows it."
+      confidence: 0.35
+      category: authorization
+  diagnostic_commands:
+    - command: "aws sts get-caller-identity"
+      explanation: "Confirms which IAM identity (account, ARN, role) the call is actually made as."
+      expected_output: "The Account, UserId, and Arn of the active credentials."
+    - command: "aws iam simulate-principal-policy --policy-source-arn <arn> --action-names <service:Action> --resource-arns <resource>"
+      explanation: "Evaluates whether the principal is allowed the action, including deny sources."
+      expected_output: "EvalDecision allowed or explicitDeny, with the matching statements."
+  suggested_fixes:
+    - title: "Grant the missing action on the resource"
+      description: >-
+        Add a least-privilege policy statement allowing the exact action on the
+        target ARN to the calling identity.
+      snippet: |
+        {
+          "Effect": "Allow",
+          "Action": ["s3:GetObject"],
+          "Resource": "arn:aws:s3:::my-bucket/*"
+        }
+    - title: "Resolve the explicit deny"
+      description: "Check SCPs, permissions boundaries, and resource/KMS policies; an explicit deny overrides any allow."
+  references:
+    - title: "Fixing AWS AccessDenied errors"
+      url: "https://devopsaitoolkit.com/blog/aws-error-access-denied"
+      source: "devopsaitoolkit"
+    - title: "Troubleshoot IAM access denied"
+      url: "https://docs.aws.amazon.com/IAM/latest/UserGuide/troubleshoot_access-denied.html"
+      source: "official docs"
+  best_practices:
+    - "Use simulate-principal-policy to test permissions before deploying."
+    - "Prefer least-privilege policies scoped to specific ARNs."
+  prevention:
+    - "Review SCPs and boundaries when designing roles to avoid surprise denies."
+  tags: [iam, authorization, security]
+
+- id: aws.throttling
+  technology: aws
+  title: "Throttling / RequestLimitExceeded / Rate exceeded"
+  summary: >-
+    AWS is throttling API calls because the request rate exceeded a service or
+    account limit; calls return Throttling-class errors and should be retried.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Throttling"
+      - "RequestLimitExceeded"
+      - "ThrottlingException"
+      - "Rate exceeded"
+    weight: 0.8
+  root_causes:
+    - title: "Burst of API calls exceeds the service rate"
+      description: >-
+        Tight loops or fan-out (e.g. describe calls per resource) exceed the
+        per-service request rate.
+      confidence: 0.6
+      category: workload
+    - title: "Missing or weak retry/backoff in the client"
+      description: >-
+        The SDK retry policy is disabled or too aggressive, so throttles are not
+        absorbed gracefully.
+      confidence: 0.45
+      category: client
+    - title: "Account/service quota too low for the load"
+      description: "The request-rate quota for the service is below the application's legitimate demand."
+      confidence: 0.4
+      category: quota
+  diagnostic_commands:
+    - command: "aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=<Api> --max-results 20"
+      explanation: "Inspects recent API calls and error codes to see which calls are throttled and how often."
+      expected_output: "Events including throttling error codes for the API."
+    - command: "aws service-quotas get-service-quota --service-code <svc> --quota-code <code>"
+      explanation: "Shows the current quota value for the throttled API/limit."
+      expected_output: "The quota value and whether it is adjustable."
+  suggested_fixes:
+    - title: "Enable exponential backoff with jitter"
+      description: >-
+        Use the SDK's adaptive/standard retry mode so throttled calls back off
+        and succeed without manual loops.
+      snippet: |
+        # AWS CLI / SDK
+        export AWS_RETRY_MODE=adaptive
+        export AWS_MAX_ATTEMPTS=10
+    - title: "Reduce call volume or request a quota increase"
+      description: "Batch/cache calls and paginate efficiently; if demand is legitimate, request a quota increase via Service Quotas."
+  references:
+    - title: "Handling AWS API throttling"
+      url: "https://devopsaitoolkit.com/blog/aws-error-throttling"
+      source: "devopsaitoolkit"
+    - title: "Error retries and exponential backoff"
+      url: "https://docs.aws.amazon.com/general/latest/gr/api-retries.html"
+      source: "official docs"
+  warnings:
+    - message: "Naive fixed-interval retries can worsen throttling; always add exponential backoff with jitter."
+      severity: medium
+  best_practices:
+    - "Use the SDK's adaptive retry mode and cache/batch describe calls."
+    - "Paginate and avoid per-resource API fan-out where possible."
+  prevention:
+    - "Load-test API call volume and monitor throttle metrics."
+  tags: [throttling, retries, quotas]
+
+- id: aws.unable_to_locate_credentials
+  technology: aws
+  title: "Unable to locate credentials"
+  summary: >-
+    The AWS SDK/CLI found no credentials in any provider in its chain, so it
+    cannot sign requests.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Unable to locate credentials"
+      - "NoCredentialProviders"
+      - "Unable to load AWS credentials"
+      - "The config profile .* could not be found"
+    weight: 0.8
+  root_causes:
+    - title: "No credentials configured in the environment"
+      description: >-
+        No env vars, shared credentials file, or SSO session is present for the
+        default provider chain to use.
+      confidence: 0.55
+      category: configuration
+    - title: "Missing or wrong instance/task role"
+      description: >-
+        On EC2/ECS, the instance profile or task role is absent or unattached,
+        so IMDS provides no credentials.
+      confidence: 0.5
+      category: configuration
+    - title: "Wrong profile or region selected"
+      description: "AWS_PROFILE points at a non-existent profile, or expired SSO/temporary credentials."
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "aws configure list"
+      explanation: "Shows which credential and config sources the CLI is resolving (env, profile, role)."
+      expected_output: "The access key source and profile/region in use, or empty values."
+    - command: "curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+      explanation: "On EC2, checks whether an instance role is attached and exposed via IMDS."
+      expected_output: "A role name if an instance profile is attached; empty/404 if not."
+      platform: "EC2 instance"
+  suggested_fixes:
+    - title: "Provide credentials via the proper provider"
+      description: >-
+        Attach an instance/task role in AWS, or configure a profile/SSO session
+        locally; avoid hardcoding long-lived keys.
+      snippet: |
+        # local dev
+        aws sso login --profile myprofile
+        export AWS_PROFILE=myprofile
+    - title: "Fix the profile/region reference"
+      description: "Ensure AWS_PROFILE names an existing profile and refresh expired SSO/temporary credentials."
+  references:
+    - title: "Fixing AWS unable to locate credentials"
+      url: "https://devopsaitoolkit.com/blog/aws-error-unable-to-locate-credentials"
+      source: "devopsaitoolkit"
+    - title: "Configuration and credential file settings"
+      url: "https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html"
+      source: "official docs"
+  warnings:
+    - message: "Prefer instance/task roles or SSO over long-lived access keys, which are easily leaked."
+      severity: medium
+  best_practices:
+    - "Use IAM roles (EC2/ECS) or SSO instead of static keys."
+    - "Rely on the default provider chain rather than hardcoding credentials."
+  prevention:
+    - "Verify credential resolution in startup/health checks."
+  tags: [credentials, iam, configuration]
+
+- id: aws.instance_limit_exceeded
+  technology: aws
+  title: "InstanceLimitExceeded / VcpuLimitExceeded"
+  summary: >-
+    EC2 cannot launch instances because an account quota (instance count or
+    running vCPUs per family) in the region is exhausted.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "InstanceLimitExceeded"
+      - "VcpuLimitExceeded"
+      - "You have requested more vCPU capacity"
+      - "MaxSpotInstanceCountExceeded"
+    weight: 0.82
+  root_causes:
+    - title: "Running vCPU quota for the instance family reached"
+      description: >-
+        On-Demand vCPU quotas are per family group per region; the requested
+        launch would exceed the current limit.
+      confidence: 0.6
+      category: quota
+    - title: "Spot request quota exhausted"
+      description: "Spot vCPU/instance quotas are separate and can be hit independently of On-Demand."
+      confidence: 0.45
+      category: quota
+    - title: "Orphaned/idle instances consuming the quota"
+      description: >-
+        Forgotten or stuck instances count against the limit, leaving no room
+        for new launches.
+      confidence: 0.4
+      category: operations
+  diagnostic_commands:
+    - command: "aws service-quotas get-service-quota --service-code ec2 --quota-code L-1216C47A"
+      explanation: "Shows the Running On-Demand Standard (A,C,D,H,I,M,R,T,Z) instances vCPU quota."
+      expected_output: "The current vCPU quota value for the family group."
+    - command: "aws ec2 describe-instances --filters Name=instance-state-name,Values=running --query 'Reservations[].Instances[].[InstanceId,InstanceType]' --output table"
+      explanation: "Lists running instances and types to see what is consuming the quota."
+      expected_output: "A table of running instances; reveals orphaned ones."
+  suggested_fixes:
+    - title: "Request a quota increase"
+      description: >-
+        Raise the relevant Running vCPU (On-Demand or Spot) quota via Service
+        Quotas for the region and family group.
+      snippet: |
+        aws service-quotas request-service-quota-increase \
+          --service-code ec2 --quota-code L-1216C47A --desired-value 256
+    - title: "Reclaim or right-size capacity"
+      description: "Terminate orphaned instances, consolidate onto fewer/larger types, or launch in another region/AZ."
+  references:
+    - title: "AWS InstanceLimitExceeded / vCPU quota fix"
+      url: "https://devopsaitoolkit.com/blog/aws-error-instance-limit-exceeded"
+      source: "devopsaitoolkit"
+    - title: "Amazon EC2 service quotas"
+      url: "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-resource-limits.html"
+      source: "official docs"
+  best_practices:
+    - "Track vCPU quota headroom per region/family for autoscaling workloads."
+    - "Clean up orphaned instances so quotas reflect real usage."
+  prevention:
+    - "Request quota increases ahead of scaling events, not during incidents."
+  tags: [ec2, quotas, capacity]

@@ -1,0 +1,16 @@
+$ openstack port show 3f9a1c2b-7d6e-4a5b-8c9d-0e1f2a3b4c5d -c binding_vif_type -c binding_host_id -c status -f yaml
+binding_vif_type: binding_failed
+binding_host_id: compute-03
+status: DOWN
+
+# neutron-server.log
+2026-06-24 16:55:02.118 14471 ERROR neutron.plugins.ml2.managers [req-1a2b3c4d admin demo] Failed to bind port 3f9a1c2b-7d6e-4a5b-8c9d-0e1f2a3b4c5d on host compute-03 for vnic_type normal using segments [{'id': '...', 'network_type': 'vlan', 'physical_network': 'physnet1', 'segmentation_id': 142}]
+2026-06-24 16:55:02.119 14471 ERROR neutron.plugins.ml2.managers Binding failed for port 3f9a1c2b-7d6e-4a5b-8c9d-0e1f2a3b4c5d, please check neutron logs for more information.
+2026-06-24 16:55:02.220 14471 WARNING neutron.plugins.ml2.drivers.mech_agent [req-1a2b3c4d admin demo] Refusing to bind port for segment: no agent of type Open vSwitch agent alive on host compute-03
+
+$ openstack network agent list --host compute-03 -c Binary -c Host -c Alive -c State
++--------------------+------------+-------+-------+
+| Binary             | Host       | Alive | State |
++--------------------+------------+-------+-------+
+| neutron-ovs-agent  | compute-03 | XXX   | UP    |
++--------------------+------------+-------+-------+

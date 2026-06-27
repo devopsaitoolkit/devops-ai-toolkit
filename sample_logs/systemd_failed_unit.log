@@ -1,0 +1,9 @@
+Jun 24 19:12:40 web-01 systemd[1]: Starting myapp.service - My Application Server...
+Jun 24 19:12:40 web-01 myapp[24551]: error: cannot bind to 0.0.0.0:8443: permission denied
+Jun 24 19:12:40 web-01 systemd[1]: myapp.service: Main process exited, code=exited, status=1/FAILURE
+Jun 24 19:12:40 web-01 systemd[1]: myapp.service: Failed with result 'exit-code'.
+Jun 24 19:12:40 web-01 systemd[1]: Failed to start myapp.service - My Application Server.
+Jun 24 19:12:42 web-01 systemd[1]: myapp.service: Scheduled restart job, restart counter is at 5.
+Jun 24 19:12:42 web-01 systemd[1]: myapp.service: Start request repeated too quickly.
+Jun 24 19:12:42 web-01 systemd[1]: myapp.service: Failed with result 'start-limit-hit'.
+Jun 24 19:12:42 web-01 systemd[1]: myapp.service: entered failed state.

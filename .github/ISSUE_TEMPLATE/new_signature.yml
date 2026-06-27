@@ -1,0 +1,73 @@
+name: New knowledge-base signature
+description: Propose a new error signature for the offline knowledge base.
+title: "[Signature]: "
+labels: ["knowledge-base", "signature", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to propose a new error signature for the deterministic
+        knowledge base. See `docs/knowledge-base.md` for the signature format
+        and authoring guidelines. The more concrete the data, the faster we can
+        add it.
+
+  - type: input
+    id: technology
+    attributes:
+      label: Technology
+      description: The system this signature applies to.
+      placeholder: "Kubernetes / Terraform / Docker / OpenStack / PostgreSQL / ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: error-string
+    attributes:
+      label: Error string(s)
+      description: The exact error message(s) or a representative pattern the tool should match. Redact anything sensitive.
+      placeholder: "0/3 nodes are available: 3 Insufficient memory."
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: root-causes
+    attributes:
+      label: Likely root causes
+      description: One or more probable causes for this error.
+      placeholder: |
+        - Pod resource requests exceed available node capacity
+        - Node pressure / eviction
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic commands
+      description: >
+        Read-only commands an operator can run to confirm the cause. These must
+        not mutate the system (no apply/delete/restart).
+      placeholder: |
+        - kubectl describe pod <pod>
+        - kubectl top nodes
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Links to docs, issues, or articles that support this signature.
+      placeholder: "https://kubernetes.io/docs/..."
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: read-only
+    attributes:
+      label: Read-only guarantee
+      options:
+        - label: All diagnostic commands above are read-only and safe to run on a production system.
+          required: true

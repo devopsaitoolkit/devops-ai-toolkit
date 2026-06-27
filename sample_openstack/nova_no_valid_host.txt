@@ -1,0 +1,24 @@
+$ openstack server show test-instance -c status -c fault -f yaml
+status: ERROR
+fault:
+  code: 500
+  created: '2026-06-24T13:40:13Z'
+  message: 'No valid host was found. There are not enough hosts available.'
+  details: |-
+    Traceback (most recent call last):
+      File "/usr/lib/python3/dist-packages/nova/conductor/manager.py", line 1583, in schedule_and_build_instances
+        host_lists = self._schedule_instances(context, request_specs[0], ...)
+      File "/usr/lib/python3/dist-packages/nova/scheduler/client/query.py", line 41, in select_destinations
+        return self.scheduler_rpcapi.select_destinations(...)
+    nova.exception.NoValidHost: No valid host was found. There are not enough hosts available.
+
+$ openstack compute service list -c Binary -c Host -c Status -c State
++----------------+-------------+----------+-------+
+| Binary         | Host        | Status   | State |
++----------------+-------------+----------+-------+
+| nova-conductor | controller  | enabled  | up    |
+| nova-scheduler | controller  | enabled  | up    |
+| nova-compute   | compute-01  | enabled  | up    |
+| nova-compute   | compute-02  | disabled | up    |
+| nova-compute   | compute-03  | enabled  | down  |
++----------------+-------------+----------+-------+

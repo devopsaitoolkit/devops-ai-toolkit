@@ -1,0 +1,320 @@
+- id: mysql.access_denied
+  technology: mysql
+  title: "Access denied for user"
+  summary: >-
+    MySQL/MariaDB rejects authentication: the user/host combination, password,
+    or auth plugin does not match a grant.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Access denied for user"
+      - "ERROR 1045"
+      - "using password: (YES|NO)"
+    weight: 0.82
+  root_causes:
+    - title: "Wrong password or empty password"
+      description: >-
+        The supplied password is incorrect, or the client connects with no
+        password where one is required (using password: NO).
+      confidence: 0.6
+      category: authentication
+    - title: "No grant for the connecting host"
+      description: >-
+        Accounts are user@host scoped; a grant for 'app'@'localhost' does not
+        authorize 'app'@'10.0.0.5'.
+      confidence: 0.5
+      category: authorization
+    - title: "Auth plugin mismatch"
+      description: >-
+        The account uses caching_sha2_password or auth_socket while the client
+        or driver expects mysql_native_password.
+      confidence: 0.45
+      category: authentication
+    - title: "User does not exist"
+      description: "The referenced account was never created or was dropped."
+      confidence: 0.35
+      category: provisioning
+  diagnostic_commands:
+    - command: "mysql -u root -e \"SELECT user, host, plugin FROM mysql.user WHERE user='<user>';\""
+      explanation: "Shows whether the account exists, for which hosts, and which auth plugin it uses."
+      expected_output: "Rows listing user, host masks, and plugin name."
+    - command: "mysql -u root -e \"SHOW GRANTS FOR '<user>'@'<host>';\""
+      explanation: "Confirms whether a grant exists for the exact user/host pair connecting."
+      expected_output: "GRANT statements, or an error if no such grant exists."
+  suggested_fixes:
+    - title: "Create or fix the account for the right host"
+      description: >-
+        Create the user scoped to the connecting host (or a CIDR-appropriate
+        wildcard) and grant the needed privileges, then flush.
+      snippet: |
+        CREATE USER 'app'@'10.0.%' IDENTIFIED BY 'secret';
+        GRANT SELECT, INSERT, UPDATE, DELETE ON app.* TO 'app'@'10.0.%';
+        FLUSH PRIVILEGES;
+    - title: "Align the auth plugin with the client"
+      description: "If the driver lacks caching_sha2 support, set the account to mysql_native_password."
+      snippet: |
+        ALTER USER 'app'@'10.0.%' IDENTIFIED WITH mysql_native_password BY 'secret';
+  references:
+    - title: "Fixing MySQL Access denied for user"
+      url: "https://devopsaitoolkit.com/blog/mysql-error-access-denied"
+      source: "devopsaitoolkit"
+    - title: "Problems Connecting (Access denied)"
+      url: "https://dev.mysql.com/doc/refman/8.0/en/access-denied.html"
+      source: "official docs"
+  best_practices:
+    - "Scope accounts to the narrowest host pattern that works."
+    - "Standardize on one auth plugin your drivers fully support."
+  prevention:
+    - "Validate credentials and host grants in a deploy smoke test."
+  tags: [authentication, grants, access]
+
+- id: mysql.too_many_connections
+  technology: mysql
+  title: "ERROR 1040: Too many connections"
+  summary: >-
+    MySQL refuses new connections because it reached max_connections; clients or
+    a leaking pool exhaust available threads.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Too many connections"
+      - "ERROR 1040"
+    weight: 0.83
+  root_causes:
+    - title: "Connection leak in the application"
+      description: >-
+        Connections are opened but never closed/returned, accumulating until the
+        server limit is reached.
+      confidence: 0.6
+      category: application
+    - title: "max_connections too low for concurrency"
+      description: "The configured ceiling is below legitimate peak demand."
+      confidence: 0.45
+      category: configuration
+    - title: "Long-running or sleeping sessions hold threads"
+      description: >-
+        Sessions left in Sleep state for long periods occupy connection slots
+        without doing work.
+      confidence: 0.4
+      category: application
+  diagnostic_commands:
+    - command: "mysql -e \"SHOW STATUS LIKE 'Threads_connected'; SHOW VARIABLES LIKE 'max_connections';\""
+      explanation: "Compares current connections against the configured limit."
+      expected_output: "Threads_connected near or at max_connections."
+    - command: "mysql -e \"SHOW PROCESSLIST;\""
+      explanation: "Lists current sessions, their state, and how long they have been idle."
+      expected_output: "Many rows, often in Sleep state, revealing leaks."
+  suggested_fixes:
+    - title: "Bound the application pool and fix leaks"
+      description: >-
+        Ensure connections are returned to a bounded pool and set a wait_timeout
+        so abandoned sessions are reaped.
+      snippet: |
+        -- reap idle sessions after 5 minutes
+        SET GLOBAL wait_timeout = 300;
+    - title: "Raise max_connections if demand is legitimate"
+      description: "Increase max_connections within the server's memory budget; each thread consumes RAM."
+      snippet: |
+        SET GLOBAL max_connections = 500;
+  references:
+    - title: "MySQL too many connections fix"
+      url: "https://devopsaitoolkit.com/blog/mysql-error-too-many-connections"
+      source: "devopsaitoolkit"
+    - title: "Too many connections"
+      url: "https://dev.mysql.com/doc/refman/8.0/en/too-many-connections.html"
+      source: "official docs"
+  warnings:
+    - message: "Raising max_connections increases per-thread memory use and can OOM the server."
+      severity: medium
+  best_practices:
+    - "Use a bounded connection pool sized to real concurrency."
+    - "Set wait_timeout/interactive_timeout to reap idle sessions."
+  prevention:
+    - "Alert when Threads_connected exceeds ~80% of max_connections."
+  tags: [connections, pooling, limits]
+
+- id: mysql.table_doesnt_exist
+  technology: mysql
+  title: "ERROR 1146: Table doesn't exist"
+  summary: >-
+    A query references a table that the server cannot find in the selected
+    database, often due to a missing migration or wrong schema.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Table '.*' doesn't exist"
+      - "ERROR 1146"
+      - "Unknown table"
+    weight: 0.8
+  root_causes:
+    - title: "Migration not applied"
+      description: >-
+        The schema migration that creates the table never ran in this
+        environment.
+      confidence: 0.6
+      category: provisioning
+    - title: "Wrong database selected"
+      description: >-
+        The connection is using a different schema than the one that holds the
+        table.
+      confidence: 0.45
+      category: configuration
+    - title: "Case-sensitivity mismatch (lower_case_table_names)"
+      description: >-
+        On Linux, table names are case-sensitive by default; a name cased
+        differently than on disk is reported missing.
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "mysql -e \"SELECT DATABASE();\""
+      explanation: "Confirms which schema the current connection is actually using."
+      expected_output: "The intended database name."
+    - command: "mysql -e \"SHOW TABLES FROM <db> LIKE '<table>';\""
+      explanation: "Checks whether the table exists in the target schema with that exact case."
+      expected_output: "A row with the table name, or empty if missing."
+  suggested_fixes:
+    - title: "Run the pending migrations"
+      description: "Apply outstanding schema migrations so the table is created in this environment."
+    - title: "Qualify the table or fix the database/case"
+      description: "Reference the table as db.table and match the exact case used on disk."
+  references:
+    - title: "MySQL table doesn't exist troubleshooting"
+      url: "https://devopsaitoolkit.com/blog/mysql-error-table-doesnt-exist"
+      source: "devopsaitoolkit"
+    - title: "Identifier Case Sensitivity"
+      url: "https://dev.mysql.com/doc/refman/8.0/en/identifier-case-sensitivity.html"
+      source: "official docs"
+  best_practices:
+    - "Gate deploys on successful, idempotent migrations."
+    - "Set lower_case_table_names consistently across all environments."
+  prevention:
+    - "Verify schema presence in deploy smoke tests before serving traffic."
+  tags: [schema, migrations, tables]
+
+- id: mysql.disk_full_error_28
+  technology: mysql
+  title: "Got error 28 from storage engine (disk full)"
+  summary: >-
+    MySQL operations fail because the filesystem holding data or temp files is
+    full; OS errno 28 is ENOSPC.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Got error 28 from storage engine"
+      - "error: 28"
+      - "No space left on device"
+      - "OS errno 28"
+    weight: 0.85
+  root_causes:
+    - title: "Data directory filesystem is full"
+      description: >-
+        The datadir volume reached 100%, so InnoDB cannot extend tablespaces or
+        write redo logs.
+      confidence: 0.6
+      category: storage
+    - title: "Temp directory exhausted by large sorts"
+      description: >-
+        Queries that spill to disk fill tmpdir, failing with error 28 during
+        execution.
+      confidence: 0.5
+      category: workload
+    - title: "Binary logs accumulating without expiry"
+      description: >-
+        binlog files grow unbounded when no expire policy is set, consuming the
+        volume.
+      confidence: 0.45
+      category: configuration
+  diagnostic_commands:
+    - command: "df -h <datadir-mount> <tmpdir-mount>"
+      explanation: "Shows which filesystem (data or temp) is full."
+      expected_output: "Use% at or near 100% on the affected mount."
+      platform: "database host"
+    - command: "mysql -e \"SHOW BINARY LOGS;\""
+      explanation: "Lists binary logs and their sizes to assess binlog growth."
+      expected_output: "Many large binlog files if binlog growth is the cause."
+  suggested_fixes:
+    - title: "Reclaim space and set binlog expiry"
+      description: >-
+        Purge old binary logs and set an expiry so they self-prune, then free
+        any other space on the volume.
+      snippet: |
+        -- MySQL 8.0
+        SET GLOBAL binlog_expire_logs_seconds = 604800;  -- 7 days
+        PURGE BINARY LOGS BEFORE NOW() - INTERVAL 7 DAY;
+    - title: "Expand the volume"
+      description: "Grow the data/temp filesystem so MySQL can write again."
+  references:
+    - title: "MySQL error 28 disk full fix"
+      url: "https://devopsaitoolkit.com/blog/mysql-error-28-disk-full"
+      source: "devopsaitoolkit"
+    - title: "Server System Variables (binlog expiry)"
+      url: "https://dev.mysql.com/doc/refman/8.0/en/replication-options-binary-log.html"
+      source: "official docs"
+  warnings:
+    - message: "A full datadir can corrupt InnoDB recovery; never delete ibdata/ib_logfile files manually."
+      severity: high
+  best_practices:
+    - "Alert on disk usage well before the data/temp volume fills."
+    - "Set binlog and slow-log retention so they self-prune."
+  prevention:
+    - "Size tmpdir for the largest expected sort/join spill."
+  tags: [storage, disk, binlog]
+
+- id: mysql.lock_wait_timeout
+  technology: mysql
+  title: "ERROR 1205: Lock wait timeout exceeded"
+  summary: >-
+    A transaction waited too long for an InnoDB row lock and was rolled back;
+    another transaction held the lock past innodb_lock_wait_timeout.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Lock wait timeout exceeded"
+      - "ERROR 1205"
+      - "try restarting transaction"
+    weight: 0.8
+  root_causes:
+    - title: "Long-running transaction holds locks"
+      description: >-
+        A transaction stays open (often idle) while holding row locks the waiter
+        needs.
+      confidence: 0.6
+      category: application
+    - title: "Hot-row contention"
+      description: >-
+        Many writers update the same rows, serializing on the same locks and
+        exceeding the timeout.
+      confidence: 0.45
+      category: workload
+    - title: "Missing index forces gap/row locks on scans"
+      description: >-
+        An unindexed UPDATE/DELETE locks many rows, blocking other writers.
+      confidence: 0.4
+      category: schema
+  diagnostic_commands:
+    - command: "mysql -e \"SELECT * FROM performance_schema.data_lock_waits\\G\""
+      explanation: "Shows which transactions are blocking which, with the contended locks."
+      expected_output: "Rows pairing blocking and waiting lock requests."
+    - command: "mysql -e \"SELECT trx_id, trx_started, trx_state, trx_query FROM information_schema.innodb_trx;\""
+      explanation: "Lists active InnoDB transactions and how long they have been running."
+      expected_output: "A long-lived transaction holding locks."
+  suggested_fixes:
+    - title: "Keep transactions short and add indexes"
+      description: >-
+        Commit promptly, avoid holding locks across app/network waits, and index
+        the columns used in UPDATE/DELETE predicates.
+    - title: "Retry on timeout with backoff"
+      description: "Catch error 1205 and retry the transaction, since contention is often transient."
+  references:
+    - title: "MySQL lock wait timeout exceeded fix"
+      url: "https://devopsaitoolkit.com/blog/mysql-error-lock-wait-timeout"
+      source: "devopsaitoolkit"
+    - title: "InnoDB Locking"
+      url: "https://dev.mysql.com/doc/refman/8.0/en/innodb-locking.html"
+      source: "official docs"
+  best_practices:
+    - "Index predicates of UPDATE/DELETE to avoid locking extra rows."
+    - "Keep transactions short and avoid idle-in-transaction sessions."
+  prevention:
+    - "Monitor innodb_row_lock_waits and long-running transactions."
+  tags: [locking, innodb, transactions]

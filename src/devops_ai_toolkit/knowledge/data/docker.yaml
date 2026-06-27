@@ -1,0 +1,453 @@
+- id: docker.cannot_connect_daemon
+  technology: docker
+  title: "Cannot connect to the Docker daemon"
+  summary: >-
+    The Docker CLI cannot reach the daemon over its socket, so every command
+    fails before doing any work. Usually the daemon is stopped, the socket path
+    is wrong, or DOCKER_HOST points somewhere unreachable.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Cannot connect to the Docker daemon"
+      - "Is the docker daemon running"
+      - "dial unix /var/run/docker\\.sock: connect"
+    weight: 0.85
+  root_causes:
+    - title: "Docker daemon is not running"
+      description: >-
+        The dockerd service is stopped, failed to start, or was never enabled,
+        so no process is listening on the socket.
+      confidence: 0.7
+      category: configuration
+    - title: "DOCKER_HOST points at the wrong endpoint"
+      description: >-
+        DOCKER_HOST or a Docker context targets a remote/TLS endpoint or an
+        unset Docker Desktop socket that is not reachable.
+      confidence: 0.45
+      category: configuration
+    - title: "Socket missing because of a rootless/Desktop mismatch"
+      description: >-
+        Rootless Docker or Docker Desktop exposes the socket under
+        $XDG_RUNTIME_DIR or a per-user path, not /var/run/docker.sock.
+      confidence: 0.4
+      category: configuration
+    - title: "Daemon crashed on startup"
+      description: >-
+        A bad daemon.json, a corrupt storage driver, or a port conflict makes
+        dockerd exit immediately after launch.
+      confidence: 0.35
+      category: application
+  diagnostic_commands:
+    - command: "systemctl status docker"
+      explanation: "Shows whether dockerd is active, failed, or never started."
+      expected_output: "Active: active (running) — or failed/inactive if it is the cause."
+      platform: "linux with systemd"
+    - command: "journalctl -u docker --no-pager -n 100"
+      explanation: "Prints the daemon's own startup logs and any fatal error."
+      expected_output: "A startup error such as bad daemon.json or storage-driver failure."
+      platform: "linux with systemd"
+    - command: "docker context ls"
+      explanation: "Reveals the active context and its endpoint (where the CLI is dialing)."
+      expected_output: "The selected context and its DOCKER ENDPOINT host."
+    - command: "ss -lx | grep docker.sock"
+      explanation: "Confirms whether anything is listening on the unix socket."
+      expected_output: "A LISTEN line for /var/run/docker.sock if the daemon is up."
+      platform: "linux"
+  suggested_fixes:
+    - title: "Start and enable the daemon"
+      description: >-
+        Bring dockerd up and enable it so it survives reboots, then re-run the
+        failing command.
+      snippet: |
+        sudo systemctl enable --now docker
+    - title: "Point the CLI at the correct context/socket"
+      description: >-
+        Select the right Docker context or unset a stale DOCKER_HOST so the CLI
+        dials the running daemon.
+      snippet: |
+        docker context use default
+        unset DOCKER_HOST
+  references:
+    - title: "Cannot connect to the Docker daemon — troubleshooting"
+      url: "https://devopsaitoolkit.com/blog/docker-cannot-connect-to-daemon"
+      source: "devopsaitoolkit"
+    - title: "Docker daemon (dockerd) reference"
+      url: "https://docs.docker.com/config/daemon/"
+      source: "official"
+  best_practices:
+    - "Enable the docker service so the daemon starts on boot."
+    - "Use Docker contexts instead of editing DOCKER_HOST by hand."
+  prevention:
+    - "Validate daemon.json with a JSON linter before restarting dockerd."
+    - "Check journalctl after any daemon config change."
+  tags: [daemon, socket, connectivity]
+
+- id: docker.socket_permission_denied
+  technology: docker
+  title: "Permission denied on /var/run/docker.sock"
+  summary: >-
+    The CLI reaches the socket but the OS rejects the connection because the
+    user is not a member of the docker group (or the socket permissions are
+    locked down).
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "permission denied while trying to connect to the Docker daemon socket"
+      - "/var/run/docker\\.sock: connect: permission denied"
+      - "Got permission denied while trying to connect"
+    weight: 0.85
+  root_causes:
+    - title: "User not in the docker group"
+      description: >-
+        The socket is owned by root:docker with group rw; a user outside that
+        group cannot open it.
+      confidence: 0.7
+      category: authorization
+    - title: "Group membership not yet applied to the session"
+      description: >-
+        The user was added to the docker group but the current shell/session
+        still has the old group set.
+      confidence: 0.5
+      category: configuration
+    - title: "Restrictive socket ownership or permissions"
+      description: >-
+        A hardened host changed the socket to root-only (0600) so only root can
+        connect.
+      confidence: 0.35
+      category: security
+  diagnostic_commands:
+    - command: "ls -l /var/run/docker.sock"
+      explanation: "Shows the socket owner, group, and permission bits."
+      expected_output: "srw-rw---- 1 root docker ... /var/run/docker.sock"
+      platform: "linux"
+    - command: "id"
+      explanation: "Lists the current user's group memberships in the active session."
+      expected_output: "The docker group present (or absent) in the groups list."
+      platform: "linux"
+    - command: "getent group docker"
+      explanation: "Confirms the docker group exists and who its members are."
+      expected_output: "docker:x:<gid>:<members> including your username."
+      platform: "linux"
+  suggested_fixes:
+    - title: "Add the user to the docker group"
+      description: >-
+        Add the account to the docker group, then start a fresh login session so
+        the membership takes effect. Note this grants root-equivalent access.
+      snippet: |
+        sudo usermod -aG docker "$USER"
+        # log out and back in, or: newgrp docker
+    - title: "Use rootless Docker for unprivileged access"
+      description: >-
+        Run the rootless daemon so the user owns their own socket without docker
+        group membership.
+  references:
+    - title: "Fixing Docker socket permission denied"
+      url: "https://devopsaitoolkit.com/blog/docker-socket-permission-denied"
+      source: "devopsaitoolkit"
+    - title: "Manage Docker as a non-root user"
+      url: "https://docs.docker.com/engine/install/linux-postinstall/"
+      source: "official"
+  warnings:
+    - message: "Membership of the docker group is equivalent to root on the host."
+      severity: high
+  best_practices:
+    - "Prefer rootless Docker for developer workstations."
+    - "Limit docker group membership to trusted operators."
+  prevention:
+    - "Add operators to the docker group during provisioning, not ad hoc."
+  tags: [permissions, socket, group]
+
+- id: docker.oci_exec_not_found
+  technology: docker
+  title: "OCI runtime create failed: exec format / executable not found"
+  summary: >-
+    The container is created but the runtime cannot start the entrypoint because
+    the binary is missing, not executable, or built for the wrong CPU
+    architecture.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "OCI runtime create failed"
+      - "executable file not found in \\$PATH"
+      - "exec format error"
+      - "no such file or directory: unknown"
+    weight: 0.8
+  root_causes:
+    - title: "Entrypoint/command binary does not exist"
+      description: >-
+        The CMD/ENTRYPOINT references a path or executable that is not present in
+        the image (typo or never installed).
+      confidence: 0.6
+      category: configuration
+    - title: "Architecture mismatch (exec format error)"
+      description: >-
+        The image was built for a different architecture (e.g. arm64 image run
+        on amd64) so the kernel cannot exec the binary.
+      confidence: 0.5
+      category: build
+    - title: "Binary present but not executable"
+      description: >-
+        The entrypoint file lacks the execute bit or a script is missing its
+        interpreter shebang.
+      confidence: 0.4
+      category: configuration
+    - title: "Shell form entrypoint with no /bin/sh"
+      description: >-
+        A shell-form CMD needs /bin/sh, which is absent in minimal/scratch/distroless images."
+      confidence: 0.35
+      category: configuration
+  diagnostic_commands:
+    - command: "docker inspect <image> --format '{{.Os}}/{{.Architecture}}'"
+      explanation: "Shows the image's OS/architecture to spot a platform mismatch."
+      expected_output: "linux/amd64 (or arm64) — compare against the host."
+    - command: "docker inspect <image> --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}'"
+      explanation: "Reveals the exact entrypoint/command the runtime tried to exec."
+      expected_output: "The configured Entrypoint and Cmd arrays."
+    - command: "docker run --rm --entrypoint ls <image> -l /"
+      explanation: "Lists the image filesystem read-only to confirm the binary exists."
+      expected_output: "The expected binary present (or missing) at its path."
+  suggested_fixes:
+    - title: "Build/pull the correct architecture"
+      description: >-
+        Specify the platform so the binary matches the host CPU.
+      snippet: |
+        docker run --platform linux/amd64 <image>
+        # or build multi-arch: docker buildx build --platform linux/amd64,linux/arm64 .
+    - title: "Fix the entrypoint path and permissions"
+      description: >-
+        Correct the CMD/ENTRYPOINT to a real path and ensure the file is
+        executable in the Dockerfile.
+      snippet: |
+        COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+        RUN chmod +x /usr/local/bin/entrypoint.sh
+        ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+  references:
+    - title: "OCI runtime create failed — what it means"
+      url: "https://devopsaitoolkit.com/blog/docker-oci-runtime-create-failed"
+      source: "devopsaitoolkit"
+    - title: "Dockerfile ENTRYPOINT reference"
+      url: "https://docs.docker.com/reference/dockerfile/#entrypoint"
+      source: "official"
+  best_practices:
+    - "Use exec-form ENTRYPOINT (JSON array) to avoid shell dependencies."
+    - "Build multi-arch images when targeting mixed CPU fleets."
+  prevention:
+    - "Run a smoke `docker run` of the image in CI before release."
+  tags: [runtime, entrypoint, architecture]
+
+- id: docker.no_space_left
+  technology: docker
+  title: "No space left on device"
+  summary: >-
+    A build, pull, or container write fails because the filesystem backing
+    Docker's data root (or the host disk / inodes) is full.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "no space left on device"
+      - "write .*: no space left on device"
+      - "failed to register layer.*no space left"
+    weight: 0.82
+  root_causes:
+    - title: "Docker data root disk is full"
+      description: >-
+        Accumulated images, stopped containers, and dangling layers under
+        /var/lib/docker have filled the filesystem.
+      confidence: 0.65
+      category: resources
+    - title: "Unbounded container or volume growth"
+      description: >-
+        Logs or application data written inside containers/volumes grew without
+        rotation until the disk filled.
+      confidence: 0.45
+      category: resources
+    - title: "Inode exhaustion"
+      description: >-
+        The filesystem has free bytes but no free inodes (many small layer
+        files), so writes still fail.
+      confidence: 0.35
+      category: resources
+  diagnostic_commands:
+    - command: "df -h /var/lib/docker"
+      explanation: "Shows free space on the filesystem holding Docker's data root."
+      expected_output: "Use% at or near 100% if disk space is the cause."
+      platform: "linux"
+    - command: "df -i /var/lib/docker"
+      explanation: "Shows free inodes — rules in/out inode exhaustion."
+      expected_output: "IUse% at 100% indicates inode exhaustion."
+      platform: "linux"
+    - command: "docker system df -v"
+      explanation: "Breaks down space used by images, containers, volumes, and build cache."
+      expected_output: "Reclaimable space across images/build cache/volumes."
+  suggested_fixes:
+    - title: "Reclaim space safely"
+      description: >-
+        Remove dangling images, stopped containers, and unused build cache. Use
+        prune carefully — it deletes data.
+      snippet: |
+        docker image prune
+        docker builder prune
+        # review first: docker system df -v
+    - title: "Move the data root to a larger volume"
+      description: >-
+        Point Docker's data-root at a bigger disk and/or add log rotation to
+        prevent recurrence.
+      snippet: |
+        // /etc/docker/daemon.json
+        { "data-root": "/data/docker",
+          "log-driver": "json-file",
+          "log-opts": { "max-size": "10m", "max-file": "3" } }
+  references:
+    - title: "Docker no space left on device — cleanup guide"
+      url: "https://devopsaitoolkit.com/blog/docker-no-space-left-on-device"
+      source: "devopsaitoolkit"
+    - title: "Prune unused Docker objects"
+      url: "https://docs.docker.com/config/pruning/"
+      source: "official"
+  warnings:
+    - message: "docker system prune permanently deletes stopped containers, networks, and (with -a) unused images."
+      severity: high
+  best_practices:
+    - "Configure json-file log rotation (max-size/max-file) on the daemon."
+    - "Monitor /var/lib/docker disk and inode usage."
+  prevention:
+    - "Schedule periodic prune of dangling images and build cache."
+    - "Keep the Docker data root on a dedicated, monitored volume."
+  tags: [disk, storage, prune]
+
+- id: docker_compose.port_already_allocated
+  technology: docker_compose
+  title: "bind: port is already allocated"
+  summary: >-
+    Docker cannot publish a container port because the host port is already in
+    use by another container or process.
+  applies_to: [log, command_output, error_string, compose]
+  match:
+    any_of:
+      - "port is already allocated"
+      - "bind: address already in use"
+      - "Bind for 0\\.0\\.0\\.0:\\d+ failed: port is already allocated"
+    weight: 0.82
+  root_causes:
+    - title: "Another container already publishes the port"
+      description: >-
+        A running or zombie container from a previous run holds the same host
+        port mapping.
+      confidence: 0.6
+      category: configuration
+    - title: "A host process is bound to the port"
+      description: >-
+        A non-Docker service (e.g. a local web server or database) already
+        listens on the requested host port.
+      confidence: 0.5
+      category: configuration
+    - title: "Duplicate port mapping in compose"
+      description: >-
+        Two services in the compose file map to the same host port, or a scaled
+        service tries to reuse a fixed port.
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "docker ps --format '{{.Names}}\\t{{.Ports}}'"
+      explanation: "Lists running containers and their published host ports."
+      expected_output: "A container already mapping the conflicting host port."
+    - command: "ss -ltnp | grep ':<port>'"
+      explanation: "Shows which host process is listening on the port."
+      expected_output: "The PID/process holding the port, or nothing if free."
+      platform: "linux"
+    - command: "docker compose config"
+      explanation: "Renders the resolved compose file to spot duplicate port mappings."
+      expected_output: "The fully-resolved ports for each service."
+  suggested_fixes:
+    - title: "Free the port or change the mapping"
+      description: >-
+        Stop the conflicting container/process, or map the service to a
+        different host port.
+      snippet: |
+        ports:
+          - "8081:80"   # was 80:80
+    - title: "Let Docker choose an ephemeral host port"
+      description: >-
+        Publish only the container port so Docker assigns a free host port
+        automatically.
+      snippet: |
+        ports:
+          - "80"
+  references:
+    - title: "Docker port already allocated — fix"
+      url: "https://devopsaitoolkit.com/blog/docker-port-is-already-allocated"
+      source: "devopsaitoolkit"
+    - title: "Compose ports reference"
+      url: "https://docs.docker.com/reference/compose-file/services/#ports"
+      source: "official"
+  best_practices:
+    - "Use distinct host ports per service or ephemeral publishing."
+    - "Run `docker compose down` before re-`up` to release old mappings."
+  prevention:
+    - "Reserve a port range per project to avoid host-process clashes."
+  tags: [networking, ports, compose]
+
+- id: docker.pull_access_denied
+  technology: docker
+  title: "pull access denied / manifest unknown"
+  summary: >-
+    A docker pull fails because the repository/tag does not exist, is private
+    and unauthenticated, or the registry rate-limited the request.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "pull access denied"
+      - "manifest unknown"
+      - "repository does not exist or may require 'docker login'"
+      - "denied: requested access to the resource is denied"
+    weight: 0.82
+  root_causes:
+    - title: "Wrong image name or tag"
+      description: >-
+        A typo, a missing tag, or a non-existent :tag yields manifest unknown.
+      confidence: 0.6
+      category: configuration
+    - title: "Private repository without login"
+      description: >-
+        The repo is private and the client is not authenticated, so the registry
+        returns access denied.
+      confidence: 0.55
+      category: authentication
+    - title: "Docker Hub anonymous pull rate limit"
+      description: >-
+        Anonymous or free-tier pulls exceeded Docker Hub's rate limit and the
+        registry rejects further pulls.
+      confidence: 0.35
+      category: network
+  diagnostic_commands:
+    - command: "docker manifest inspect <image>:<tag>"
+      explanation: "Checks whether the tag exists and is reachable without pulling layers."
+      expected_output: "The manifest JSON, or a 'manifest unknown' / 'denied' error."
+    - command: "cat ~/.docker/config.json"
+      explanation: "Shows which registries the client is currently authenticated to."
+      expected_output: "An auths entry for the target registry if logged in."
+  suggested_fixes:
+    - title: "Correct the reference and authenticate"
+      description: >-
+        Verify the repository and tag, then log in to the registry holding a
+        private image.
+      snippet: |
+        docker login registry.example.com
+        docker pull registry.example.com/team/app:1.2.3
+    - title: "Avoid Docker Hub rate limits"
+      description: >-
+        Authenticate to raise the limit or pull through a registry mirror /
+        dependency proxy.
+  references:
+    - title: "Docker pull access denied — causes and fixes"
+      url: "https://devopsaitoolkit.com/blog/docker-pull-access-denied"
+      source: "devopsaitoolkit"
+    - title: "Docker registry HTTP API v2 errors"
+      url: "https://distribution.github.io/distribution/spec/api/"
+      source: "official"
+  best_practices:
+    - "Reference images by full registry path and immutable tag/digest."
+    - "Authenticate CI runners to the registry to avoid anonymous limits."
+  prevention:
+    - "Mirror upstream images into a private registry for reliability."
+  tags: [registry, auth, pull]

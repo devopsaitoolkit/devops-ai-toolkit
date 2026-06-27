@@ -1,0 +1,10 @@
+2026-06-24T09:14:02.114Z  kubelet  pod/payments-api-7c9d5f8b6c-q4m2x  Created container payments-api
+2026-06-24T09:14:02.331Z  kubelet  pod/payments-api-7c9d5f8b6c-q4m2x  Started container payments-api
+2026-06-24T09:14:02.998Z  payments-api  FATAL  config error: required environment variable DATABASE_URL is not set
+2026-06-24T09:14:03.002Z  payments-api  panic: runtime error: invalid memory address or nil pointer dereference
+2026-06-24T09:14:03.214Z  kubelet  pod/payments-api-7c9d5f8b6c-q4m2x  Container payments-api failed liveness probe, will be restarted
+2026-06-24T09:14:03.560Z  kubelet  pod/payments-api-7c9d5f8b6c-q4m2x  Back-off restarting failed container payments-api in pod payments-api-7c9d5f8b6c-q4m2x_payments
+2026-06-24T09:14:35.119Z  kubelet  pod/payments-api-7c9d5f8b6c-q4m2x  Back-off restarting failed container
+2026-06-24T09:15:41.882Z  kube-controller  pod/payments-api-7c9d5f8b6c-q4m2x  status: CrashLoopBackOff (restartCount=6)
+2026-06-24T09:16:55.043Z  kubelet  pod/payments-api-7c9d5f8b6c-q4m2x  Last State: Terminated, Reason: Error, Exit Code: 1
+2026-06-24T09:18:10.771Z  kube-controller  pod/payments-api-7c9d5f8b6c-q4m2x  Pod is in CrashLoopBackOff and is not Ready

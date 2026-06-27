@@ -1,0 +1,19 @@
+Running with gitlab-runner 16.11.0 (91a27b2a)
+  on docker-runner-prod-2 fX9aZ1qT, system ID: s_9c4b2e7a1f33
+Preparing the "docker" executor
+Using Docker executor with image node:20-alpine ...
+Pulling docker image node:20-alpine ...
+Preparing environment
+Running on runner-fx9az1qt-project-482-concurrent-0 via docker-runner-prod-2...
+Getting source from Git repository
+$ npm ci
+added 842 packages in 21s
+$ npm run test:unit
+> app@2.3.0 test:unit
+> jest --ci
+FAIL  src/services/billing.test.ts
+  billing service
+    ✕ applies tax to invoice total (14 ms)
+Tests: 1 failed, 87 passed, 88 total
+2026-06-24T17:44:09.118Z  job log  npm error code ELIFECYCLE
+ERROR: Job failed: exit code 1

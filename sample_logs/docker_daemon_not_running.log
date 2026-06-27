@@ -1,0 +1,7 @@
+2026-06-24T08:31:55+00:00  user@build-host  $ docker ps
+2026-06-24T08:31:55+00:00  docker  Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?
+2026-06-24T08:32:01+00:00  user@build-host  $ docker build -t app:dev .
+2026-06-24T08:32:01+00:00  docker  error during connect: Get "http://%2Fvar%2Frun%2Fdocker.sock/v1.45/version": dial unix /var/run/docker.sock: connect: no such file or directory
+2026-06-24T08:32:01+00:00  docker  Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?
+2026-06-24T08:32:18+00:00  systemd  docker.service: Loaded: loaded (/lib/systemd/system/docker.service; disabled; vendor preset: enabled)
+2026-06-24T08:32:18+00:00  systemd  docker.service: Active: inactive (dead)

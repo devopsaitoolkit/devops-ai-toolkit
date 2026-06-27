@@ -1,0 +1,325 @@
+- id: ceph.health_warn_err
+  technology: ceph
+  title: "Cluster in HEALTH_WARN / HEALTH_ERR"
+  summary: >-
+    ceph status reports a non-OK cluster health. HEALTH_WARN flags a degraded or
+    at-risk condition; HEALTH_ERR indicates data may be unavailable or lost.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "HEALTH_WARN"
+      - "HEALTH_ERR"
+      - "cluster is unhealthy"
+    weight: 0.75
+  root_causes:
+    - title: "Underlying OSD/PG problem raises a health flag"
+      description: >-
+        A more specific issue (OSD down, PGs degraded, near-full) propagates up
+        to the overall HEALTH_WARN/ERR state.
+      confidence: 0.6
+      category: storage
+    - title: "Monitor clock skew or quorum issue"
+      description: >-
+        Mon clock skew or a degraded mon quorum surfaces as a health warning.
+      confidence: 0.4
+      category: cluster
+    - title: "Misconfiguration warnings"
+      description: >-
+        Flags such as too few PGs, disabled scrubbing, or insufficient standby
+        MDS raise warnings without an outage.
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "ceph health detail"
+      explanation: "Expands the summary into specific warnings/errors and the affected components."
+      expected_output: "A list of health checks (e.g. OSD_DOWN, PG_DEGRADED) with details."
+      platform: "node with admin keyring"
+    - command: "ceph status"
+      explanation: "Shows overall health, mon quorum, OSD map, and PG state counts at a glance."
+      expected_output: "A status block with health, services, and pgs by state."
+      platform: "node with admin keyring"
+  suggested_fixes:
+    - title: "Address the specific check from health detail"
+      description: >-
+        Read ceph health detail and resolve the root check (OSD down, PG
+        degraded, near-full) rather than the generic state.
+    - title: "Fix mon clock skew"
+      description: "Ensure NTP/chrony is synced across mon nodes if MON_CLOCK_SKEW is reported."
+  references:
+    - title: "Diagnosing Ceph cluster health"
+      url: "https://devopsaitoolkit.com/blog/ceph-error-health-warn"
+      source: "devopsaitoolkit"
+    - title: "Health checks"
+      url: "https://docs.ceph.com/en/latest/rados/operations/health-checks/"
+      source: "official docs"
+  best_practices:
+    - "Treat ceph health detail as the entry point, not the one-line summary."
+    - "Keep mon nodes time-synced to avoid clock-skew warnings."
+  prevention:
+    - "Alert on any non-HEALTH_OK state and triage promptly."
+  tags: [health, cluster, monitoring]
+
+- id: ceph.osd_down
+  technology: ceph
+  title: "OSD down"
+  summary: >-
+    One or more OSDs are marked down, reducing redundancy and capacity; if down
+    OSDs map onto the same PGs, data can become degraded or unavailable.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "OSD_DOWN"
+      - "osd.* is down"
+      - "osds: \\d+ up, \\d+ in"
+      - "marked itself down"
+    weight: 0.82
+  root_causes:
+    - title: "Failed or unresponsive disk"
+      description: >-
+        The backing device failed or has high latency, so the OSD daemon
+        crashed or was marked down.
+      confidence: 0.6
+      category: hardware
+    - title: "OSD daemon crashed or was OOM-killed"
+      description: "The ceph-osd process died (assert, OOM) and did not restart."
+      confidence: 0.45
+      category: process
+    - title: "Network or heartbeat failure"
+      description: >-
+        Cluster/public network issues prevent heartbeats, so peers report the
+        OSD down even if the disk is fine.
+      confidence: 0.4
+      category: network
+  diagnostic_commands:
+    - command: "ceph osd tree"
+      explanation: "Shows which OSDs are up/down/in and their host placement."
+      expected_output: "Down OSDs flagged with status 'down'."
+      platform: "node with admin keyring"
+    - command: "journalctl -u ceph-osd@<id> --since '1 hour ago'"
+      explanation: "Reveals why the OSD daemon stopped (assert, OOM, disk error)."
+      expected_output: "Crash backtrace, OOM kill, or I/O error messages."
+      platform: "the OSD's host"
+  suggested_fixes:
+    - title: "Restart a healthy OSD; replace a failed disk"
+      description: >-
+        If the disk is fine, restart the daemon. If the device failed, replace
+        it and re-provision the OSD so the cluster backfills.
+      snippet: |
+        systemctl restart ceph-osd@<id>
+        ceph osd tree
+    - title: "Fix cluster network heartbeats"
+      description: "Resolve packet loss/MTU issues on the cluster network if OSDs flap without disk faults."
+  references:
+    - title: "Recovering a down Ceph OSD"
+      url: "https://devopsaitoolkit.com/blog/ceph-error-osd-down"
+      source: "devopsaitoolkit"
+    - title: "Troubleshooting OSDs"
+      url: "https://docs.ceph.com/en/latest/rados/troubleshooting/troubleshooting-osd/"
+      source: "official docs"
+  warnings:
+    - message: "Losing additional OSDs in the same failure domain while one is down can make PGs unavailable or cause data loss."
+      severity: high
+  best_practices:
+    - "Spread replicas across failure domains so a single OSD loss is non-fatal."
+    - "Monitor SMART and OSD heartbeats to catch failing disks early."
+  prevention:
+    - "Alert on any OSD down and replace failing disks before they die."
+  tags: [osd, availability, hardware]
+
+- id: ceph.pg_degraded_undersized
+  technology: ceph
+  title: "PGs degraded / undersized"
+  summary: >-
+    Placement groups have fewer replicas than configured (undersized) or copies
+    that need re-replication (degraded), reducing data redundancy.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "PG_DEGRADED"
+      - "pgs degraded"
+      - "undersized"
+      - "active\\+undersized"
+    weight: 0.8
+  root_causes:
+    - title: "OSDs down/out reduce available replicas"
+      description: >-
+        With OSDs missing, PGs cannot place the full replica count until
+        recovery or new OSDs are available.
+      confidence: 0.6
+      category: storage
+    - title: "CRUSH rule cannot satisfy size in failure domains"
+      description: >-
+        Too few hosts/racks for the pool size means PGs stay undersized even
+        when OSDs are up.
+      confidence: 0.45
+      category: configuration
+    - title: "Recovery throttled or stalled"
+      description: >-
+        Backfill/recovery is rate-limited or blocked, so degraded PGs heal
+        slowly.
+      confidence: 0.4
+      category: operations
+  diagnostic_commands:
+    - command: "ceph pg dump_stuck degraded"
+      explanation: "Lists PGs stuck in a degraded state and the OSDs involved."
+      expected_output: "PG ids with their up/acting OSD sets."
+      platform: "node with admin keyring"
+    - command: "ceph osd df tree"
+      explanation: "Shows OSD count and capacity per host to check failure-domain coverage."
+      expected_output: "OSD distribution across hosts; too few hosts for the pool size."
+      platform: "node with admin keyring"
+  suggested_fixes:
+    - title: "Restore OSD capacity"
+      description: >-
+        Bring down OSDs back up or add OSDs/hosts so PGs can reach full replica
+        count and recover.
+    - title: "Align pool size with failure domains"
+      description: "Ensure enough hosts/racks exist for the pool's size and CRUSH rule, or adjust the rule appropriately."
+  references:
+    - title: "Fixing degraded and undersized Ceph PGs"
+      url: "https://devopsaitoolkit.com/blog/ceph-error-pg-degraded"
+      source: "devopsaitoolkit"
+    - title: "Placement Groups"
+      url: "https://docs.ceph.com/en/latest/rados/operations/placement-groups/"
+      source: "official docs"
+  warnings:
+    - message: "Degraded PGs mean reduced redundancy; another failure could cause data loss until they recover."
+      severity: high
+  best_practices:
+    - "Size pools and CRUSH rules to the real number of failure domains."
+    - "Keep enough free OSD capacity for recovery to complete."
+  prevention:
+    - "Add OSD capacity before failure domains run thin."
+  tags: [pg, replication, recovery]
+
+- id: ceph.osd_nearfull_full
+  technology: ceph
+  title: "OSD nearfull / full"
+  summary: >-
+    One or more OSDs crossed the nearfull or full ratio. At full, the cluster
+    stops accepting writes to prevent data loss.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "OSD_NEARFULL"
+      - "OSD_FULL"
+      - "nearfull osd"
+      - "full ratio"
+    weight: 0.83
+  root_causes:
+    - title: "Uneven data distribution across OSDs"
+      description: >-
+        Imbalanced PG placement fills some OSDs well before the cluster average,
+        tripping nearfull/full on a few devices.
+      confidence: 0.55
+      category: balancing
+    - title: "Cluster genuinely low on capacity"
+      description: "Overall usage has grown toward the full ratio and more capacity is needed."
+      confidence: 0.5
+      category: capacity
+    - title: "Recovery temporarily inflating usage"
+      description: >-
+        Backfill after a failure increases usage on remaining OSDs, pushing some
+        toward nearfull.
+      confidence: 0.35
+      category: operations
+  diagnostic_commands:
+    - command: "ceph osd df"
+      explanation: "Shows per-OSD utilization to find which devices are near/over the ratios."
+      expected_output: "OSDs with high USE% near the nearfull/full thresholds."
+      platform: "node with admin keyring"
+    - command: "ceph df"
+      explanation: "Reports overall and per-pool usage versus available capacity."
+      expected_output: "Global usage approaching full ratio."
+      platform: "node with admin keyring"
+  suggested_fixes:
+    - title: "Add capacity or rebalance"
+      description: >-
+        Add OSDs/hosts to grow capacity, and enable the balancer to even out PG
+        distribution across OSDs.
+      snippet: |
+        ceph balancer on
+        ceph balancer mode upmap
+    - title: "Reclaim space"
+      description: "Delete unneeded data/snapshots; as an emergency, raise nearfull ratio slightly to regain write access while adding capacity."
+  references:
+    - title: "Resolving Ceph OSD nearfull and full"
+      url: "https://devopsaitoolkit.com/blog/ceph-error-osd-full"
+      source: "devopsaitoolkit"
+    - title: "Storage Capacity / full ratios"
+      url: "https://docs.ceph.com/en/latest/rados/operations/health-checks/"
+      source: "official docs"
+  warnings:
+    - message: "At the full ratio the cluster blocks writes; act at nearfull, not after full is reached."
+      severity: critical
+  best_practices:
+    - "Run the balancer and monitor per-OSD utilization, not just the average."
+    - "Plan capacity additions well ahead of the nearfull ratio."
+  prevention:
+    - "Alert at the nearfull ratio to leave headroom for recovery."
+  tags: [capacity, balancing, full]
+
+- id: ceph.slow_ops
+  technology: ceph
+  title: "Slow ops / requests blocked"
+  summary: >-
+    OSDs report operations taking longer than the threshold (slow ops / blocked
+    requests), signaling latency that can stall clients.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "slow ops"
+      - "SLOW_OPS"
+      - "slow request"
+      - "blocked for > \\d+ secs"
+    weight: 0.78
+  root_causes:
+    - title: "Slow or failing disk"
+      description: >-
+        A device with high latency or pending sector errors delays operations on
+        its OSD.
+      confidence: 0.55
+      category: hardware
+    - title: "Network congestion or packet loss"
+      description: >-
+        Cluster-network saturation or loss delays replication and peering ops.
+      confidence: 0.45
+      category: network
+    - title: "Recovery/scrub contention"
+      description: >-
+        Heavy backfill or deep-scrub competes with client I/O, inflating op
+        latency.
+      confidence: 0.4
+      category: operations
+  diagnostic_commands:
+    - command: "ceph daemon osd.<id> dump_ops_in_flight"
+      explanation: "Shows the in-flight operations and how long each has been stuck on that OSD."
+      expected_output: "Ops with large age/duration values."
+      platform: "the OSD's host"
+    - command: "ceph osd perf"
+      explanation: "Reports per-OSD commit/apply latencies to pinpoint a slow device."
+      expected_output: "One or a few OSDs with much higher latency than peers."
+      platform: "node with admin keyring"
+  suggested_fixes:
+    - title: "Isolate and replace the slow OSD"
+      description: >-
+        Identify the high-latency OSD/disk; if hardware is failing, drain and
+        replace it.
+    - title: "Throttle recovery and scrubbing"
+      description: "Reduce recovery/scrub aggressiveness during peak load so client ops are not starved."
+      snippet: |
+        ceph config set osd osd_max_backfills 1
+        ceph config set osd osd_recovery_max_active 1
+  references:
+    - title: "Diagnosing Ceph slow ops"
+      url: "https://devopsaitoolkit.com/blog/ceph-error-slow-ops"
+      source: "devopsaitoolkit"
+    - title: "Troubleshooting OSDs (slow requests)"
+      url: "https://docs.ceph.com/en/latest/rados/troubleshooting/troubleshooting-osd/"
+      source: "official docs"
+  best_practices:
+    - "Track per-OSD latency to catch a single slow disk dragging the cluster."
+    - "Schedule deep scrubs off-peak and bound recovery concurrency."
+  prevention:
+    - "Replace disks showing rising latency or SMART errors proactively."
+  tags: [latency, performance, osd]

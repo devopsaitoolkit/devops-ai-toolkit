@@ -1,0 +1,262 @@
+- id: redis.misconf_rdb_save
+  technology: redis
+  title: "MISCONF Redis configured to save RDB snapshots"
+  summary: >-
+    Redis stopped accepting writes because a background RDB save failed; by
+    default stop-writes-on-bgsave-error blocks writes to protect durability.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "MISCONF Redis is configured to save RDB snapshots"
+      - "stop-writes-on-bgsave-error"
+      - "Background saving error"
+      - "rdb_last_bgsave_status:err"
+    weight: 0.85
+  root_causes:
+    - title: "Disk full or unwritable persistence directory"
+      description: >-
+        The dir/dbfilename location is full or not writable, so the background
+        save (BGSAVE) fails.
+      confidence: 0.6
+      category: storage
+    - title: "Insufficient memory for fork/copy-on-write"
+      description: >-
+        BGSAVE forks and overcommit is disabled, so the child cannot allocate
+        and the save fails.
+      confidence: 0.45
+      category: resources
+    - title: "Permission error on the data directory"
+      description: "The redis user cannot write to the configured dir, failing the snapshot."
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "redis-cli INFO persistence"
+      explanation: "Shows rdb_last_bgsave_status and the last save error reason."
+      expected_output: "rdb_last_bgsave_status:err when a save has failed."
+    - command: "df -h <redis-dir> && ls -ld <redis-dir>"
+      explanation: "Checks free space and write permissions on the persistence directory."
+      expected_output: "Space available and the redis user owning a writable dir."
+      platform: "redis host"
+  suggested_fixes:
+    - title: "Fix the underlying save failure"
+      description: >-
+        Free disk on the data volume or correct permissions so BGSAVE succeeds,
+        then writes resume automatically.
+      snippet: |
+        # confirm a manual save now works
+        redis-cli BGSAVE
+        redis-cli INFO persistence | grep rdb_last_bgsave_status
+    - title: "Enable memory overcommit for fork"
+      description: "Set vm.overcommit_memory=1 so the BGSAVE child can fork under memory pressure."
+      snippet: |
+        sysctl -w vm.overcommit_memory=1
+  references:
+    - title: "Redis MISCONF RDB snapshot error fix"
+      url: "https://devopsaitoolkit.com/blog/redis-error-misconf-rdb"
+      source: "devopsaitoolkit"
+    - title: "Redis persistence"
+      url: "https://redis.io/docs/management/persistence/"
+      source: "official docs"
+  warnings:
+    - message: "Disabling stop-writes-on-bgsave-error hides the failure and risks silent data loss; fix the root cause instead."
+      severity: high
+  best_practices:
+    - "Monitor rdb_last_bgsave_status and free disk on the persistence volume."
+    - "Enable vm.overcommit_memory=1 on hosts running Redis with persistence."
+  prevention:
+    - "Alert on disk usage of the Redis data directory."
+  tags: [persistence, rdb, storage]
+
+- id: redis.oom_maxmemory
+  technology: redis
+  title: "OOM command not allowed when used memory > maxmemory"
+  summary: >-
+    Redis rejected a write because used memory exceeded maxmemory and the
+    eviction policy could not free enough space (often noeviction).
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "OOM command not allowed when used memory > 'maxmemory'"
+      - "used_memory.*maxmemory"
+      - "maxmemory-policy"
+    weight: 0.84
+  root_causes:
+    - title: "maxmemory reached with noeviction policy"
+      description: >-
+        The default noeviction policy refuses writes once the limit is hit
+        rather than evicting keys.
+      confidence: 0.6
+      category: configuration
+    - title: "Keys stored without TTLs"
+      description: >-
+        Data accumulates with no expiry, so the working set grows past the
+        memory budget.
+      confidence: 0.5
+      category: application
+    - title: "maxmemory too small for the dataset"
+      description: "The configured limit is below the legitimate working set."
+      confidence: 0.4
+      category: capacity
+  diagnostic_commands:
+    - command: "redis-cli INFO memory"
+      explanation: "Shows used_memory, maxmemory, and the active maxmemory-policy."
+      expected_output: "used_memory at or above maxmemory; policy value shown."
+    - command: "redis-cli --bigkeys"
+      explanation: "Samples the keyspace to find the largest keys consuming memory."
+      expected_output: "A report of the biggest keys by type and size."
+  suggested_fixes:
+    - title: "Set an eviction policy and TTLs"
+      description: >-
+        Choose an eviction policy suited to a cache (e.g. allkeys-lru) and give
+        cache keys TTLs so memory stays bounded.
+      snippet: |
+        redis-cli CONFIG SET maxmemory-policy allkeys-lru
+    - title: "Raise maxmemory or scale out"
+      description: "Increase maxmemory within host RAM, or shard the dataset across nodes if it must persist."
+  references:
+    - title: "Redis OOM maxmemory troubleshooting"
+      url: "https://devopsaitoolkit.com/blog/redis-error-oom-maxmemory"
+      source: "devopsaitoolkit"
+    - title: "Key eviction"
+      url: "https://redis.io/docs/reference/eviction/"
+      source: "official docs"
+  warnings:
+    - message: "allkeys eviction can drop data you expected to persist; use a volatile-* policy if some keys must survive."
+      severity: medium
+  best_practices:
+    - "Pick an eviction policy that matches cache vs. store semantics."
+    - "Give cache keys TTLs to bound memory growth."
+  prevention:
+    - "Alert when used_memory approaches maxmemory."
+  tags: [memory, eviction, maxmemory]
+
+- id: redis.connection_refused
+  technology: redis
+  title: "Connection refused to Redis"
+  summary: >-
+    A client cannot connect to Redis: the server is down, bound to the wrong
+    interface, or blocked by protected-mode/firewall.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Could not connect to Redis"
+      - "Connection refused"
+      - "ECONNREFUSED.*6379"
+    weight: 0.78
+  root_causes:
+    - title: "Redis is not running"
+      description: "The redis-server process is stopped or crashed, so nothing listens on 6379."
+      confidence: 0.6
+      category: availability
+    - title: "Bound to localhost only"
+      description: >-
+        The bind directive limits Redis to 127.0.0.1, so remote clients are
+        refused.
+      confidence: 0.45
+      category: configuration
+    - title: "protected-mode blocks remote clients"
+      description: >-
+        With no password and a non-loopback bind, protected mode refuses
+        external connections.
+      confidence: 0.4
+      category: security
+  diagnostic_commands:
+    - command: "redis-cli -h <host> -p 6379 PING"
+      explanation: "Probes connectivity; returns PONG when reachable and authorized."
+      expected_output: "PONG, or a connection/auth error."
+    - command: "ss -ltnp | grep 6379"
+      explanation: "Shows whether Redis is listening and on which interface."
+      expected_output: "A LISTEN entry on the expected address:6379."
+      platform: "redis host"
+  suggested_fixes:
+    - title: "Start Redis and confirm the listener"
+      description: "Start the service and verify it listens on the expected interface."
+      snippet: |
+        sudo systemctl start redis
+        ss -ltnp | grep 6379
+    - title: "Bind safely for remote access"
+      description: >-
+        Bind to the intended interface and require a password so protected mode
+        permits authorized remote clients.
+      snippet: |
+        # redis.conf
+        bind 0.0.0.0
+        requirepass <strong-password>
+  references:
+    - title: "Redis connection refused troubleshooting"
+      url: "https://devopsaitoolkit.com/blog/redis-error-connection-refused"
+      source: "devopsaitoolkit"
+    - title: "Redis security"
+      url: "https://redis.io/docs/management/security/"
+      source: "official docs"
+  warnings:
+    - message: "Binding Redis to a public interface without a password (or TLS) exposes the whole dataset."
+      severity: high
+  best_practices:
+    - "Require a password or TLS whenever Redis is reachable off-host."
+    - "Keep protected-mode on and bind only to needed interfaces."
+  prevention:
+    - "Monitor the service and port; restrict access with firewall rules."
+  tags: [connectivity, network, startup]
+
+- id: redis.noauth_wrongpass
+  technology: redis
+  title: "NOAUTH / WRONGPASS authentication required"
+  summary: >-
+    Commands are rejected because the connection is unauthenticated (NOAUTH) or
+    used the wrong credentials (WRONGPASS).
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "NOAUTH Authentication required"
+      - "WRONGPASS invalid username-password pair"
+      - "ERR Client sent AUTH, but no password is set"
+    weight: 0.8
+  root_causes:
+    - title: "Client did not send AUTH"
+      description: >-
+        requirepass (or an ACL) is configured but the client connects without
+        authenticating.
+      confidence: 0.55
+      category: authentication
+    - title: "Wrong password or ACL username"
+      description: "The supplied password/username does not match requirepass or the ACL user."
+      confidence: 0.5
+      category: authentication
+    - title: "AUTH sent but no password configured"
+      description: >-
+        The client sends AUTH while the server has no password set, producing an
+        error.
+      confidence: 0.35
+      category: configuration
+  diagnostic_commands:
+    - command: "redis-cli ACL WHOAMI"
+      explanation: "Shows which ACL user the current connection is authenticated as."
+      expected_output: "The authenticated username (default when using requirepass)."
+    - command: "redis-cli ACL LIST"
+      explanation: "Lists configured ACL users and rules to verify the expected account exists."
+      expected_output: "ACL rule lines for each user."
+  suggested_fixes:
+    - title: "Authenticate with the correct credentials"
+      description: >-
+        Supply the password (and username for ACL users) via AUTH or the client
+        config so commands are authorized.
+      snippet: |
+        redis-cli -a <password> PING
+        # ACL user:
+        redis-cli AUTH <username> <password>
+    - title: "Align server auth config with clients"
+      description: "Set requirepass or define ACL users consistently and distribute the credentials to clients."
+  references:
+    - title: "Redis NOAUTH / WRONGPASS fix"
+      url: "https://devopsaitoolkit.com/blog/redis-error-noauth"
+      source: "devopsaitoolkit"
+    - title: "Redis ACL"
+      url: "https://redis.io/docs/management/security/acl/"
+      source: "official docs"
+  best_practices:
+    - "Use ACL users with least privilege instead of a single shared password."
+    - "Store Redis credentials in a secret manager, not in source."
+  prevention:
+    - "Validate authentication in deploy smoke tests."
+  tags: [authentication, acl, security]

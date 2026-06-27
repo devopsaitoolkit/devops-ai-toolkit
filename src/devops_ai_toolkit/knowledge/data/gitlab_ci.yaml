@@ -1,0 +1,425 @@
+- id: gitlab_ci.stuck_no_runners
+  technology: gitlab_ci
+  title: "Job stuck: no runners with matching tags"
+  summary: >-
+    A pipeline job stays pending because no active runner is online whose tags
+    match the job's tags (or the job has tags but only untagged runners exist).
+  applies_to: [log, command_output, error_string, yaml]
+  match:
+    any_of:
+      - "This job is stuck because"
+      - "no (active )?runners online"
+      - "no runners that match all of the job's tags"
+      - "stuck.*no.*runner"
+    weight: 0.82
+  root_causes:
+    - title: "No runner has the required tags"
+      description: >-
+        The job specifies tags that no online runner carries, so nothing can pick it
+        up.
+      confidence: 0.6
+      category: configuration
+    - title: "Runner offline or paused"
+      description: >-
+        The matching runner exists but is offline (lost contact) or paused in the
+        project/instance settings.
+      confidence: 0.5
+      category: availability
+    - title: "Tagged job but only untagged runners"
+      description: >-
+        Runners are not set to 'run untagged jobs', and the job's tags do not match,
+        leaving it unpicked.
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "gitlab-runner list"
+      explanation: "Lists registered runners and their configured tags on the host."
+      expected_output: "Registered runners with their executor and tags."
+      platform: "gitlab-runner host"
+    - command: "gitlab-runner verify"
+      explanation: "Checks whether the registered runners are still valid/online with GitLab."
+      expected_output: "Each runner verified as still registered (or removed)."
+      platform: "gitlab-runner host"
+    - command: "cat /etc/gitlab-runner/config.toml"
+      explanation: "Shows runner tags, limits, and run_untagged settings."
+      expected_output: "[[runners]] entries with tags and run_untagged values."
+      platform: "gitlab-runner host"
+  suggested_fixes:
+    - title: "Align job tags with an online runner"
+      description: >-
+        Set the job's tags to match an available runner, or register/tag a runner for
+        the required label.
+      snippet: |
+        build:
+          tags: [docker, linux]   # must match a runner's tags
+          script: [make build]
+    - title: "Allow untagged jobs where appropriate"
+      description: >-
+        Enable 'run untagged jobs' on the runner for jobs that legitimately have no
+        tags.
+  references:
+    - title: "GitLab CI job stuck with no runners"
+      url: "https://devopsaitoolkit.com/blog/gitlab-ci-job-stuck-no-runners"
+      source: "devopsaitoolkit"
+    - title: "GitLab Runner tags"
+      url: "https://docs.gitlab.com/ci/runners/configure_runners/#use-tags-to-control-which-jobs-a-runner-can-run"
+      source: "official"
+  best_practices:
+    - "Standardize a small, documented set of runner tags."
+    - "Monitor runner online status and alert when key runners drop."
+  prevention:
+    - "Validate that every job's tags map to at least one active runner."
+  tags: [runners, tags, pending]
+
+- id: gitlab_ci.job_exit_code_1
+  technology: gitlab_ci
+  title: "Job failed: exit code 1"
+  summary: >-
+    A job's script step returned a non-zero exit code, so GitLab marks the job
+    failed. The real cause is in the failing command's own output above.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "ERROR: Job failed: exit code 1"
+      - "ERROR: Job failed: exit status 1"
+      - "Job failed: exit code \\d+"
+    weight: 0.7
+  root_causes:
+    - title: "A script command genuinely failed"
+      description: >-
+        A build/test/lint command returned non-zero (the actual error is printed just
+        above this line).
+      confidence: 0.6
+      category: application
+    - title: "Missing dependency or tool in the image"
+      description: >-
+        The job image lacks a required binary/package, so the command exits with an
+        error.
+      confidence: 0.45
+      category: configuration
+    - title: "Missing variable, secret, or file"
+      description: >-
+        A required CI/CD variable or input file is absent, so the script aborts.
+      confidence: 0.4
+      category: configuration
+    - title: "Environment differs from local"
+      description: >-
+        Different OS, tool versions, or working directory in the runner cause a command
+        that passes locally to fail in CI.
+      confidence: 0.35
+      category: environment
+  diagnostic_commands:
+    - command: "cat .gitlab-ci.yml"
+      explanation: "Shows the job's script so you can identify which step exited non-zero."
+      expected_output: "The script lines for the failing job."
+    - command: "docker run --rm -it <job-image> sh -c 'which <tool>'"
+      explanation: "Reproduces the runner environment to confirm a tool/dependency is present."
+      expected_output: "The tool path, or empty if it is missing from the image."
+      platform: "docker executor"
+  suggested_fixes:
+    - title: "Fix the failing command shown above"
+      description: >-
+        Read the lines immediately before the exit-code line, fix that command, and
+        reproduce locally with the same image.
+    - title: "Add the missing dependency or variable"
+      description: >-
+        Install the required tool in the job image or define the missing CI/CD
+        variable, then re-run.
+      snippet: |
+        test:
+          image: python:3.12
+          before_script: [pip install -r requirements-dev.txt]
+          script: [pytest -q]
+  references:
+    - title: "Debugging GitLab CI exit code 1"
+      url: "https://devopsaitoolkit.com/blog/gitlab-ci-job-failed-exit-code-1"
+      source: "devopsaitoolkit"
+    - title: "GitLab CI debugging"
+      url: "https://docs.gitlab.com/ci/debugging/"
+      source: "official"
+  best_practices:
+    - "Pin job images to specific versions for reproducibility."
+    - "Surface the failing command's full output (avoid swallowing errors)."
+  prevention:
+    - "Run the same commands in a pre-commit/local container before pushing."
+  tags: [scripts, failure, exit-code]
+
+- id: gitlab_ci.invalid_config_yaml
+  technology: gitlab_ci
+  title: "Invalid CI configuration (YAML / lint error)"
+  summary: >-
+    GitLab refuses to create the pipeline because .gitlab-ci.yml is syntactically
+    invalid YAML or violates the CI schema.
+  applies_to: [yaml, log, command_output, error_string]
+  match:
+    any_of:
+      - "Invalid CI config"
+      - "jobs config should contain"
+      - "yaml invalid"
+      - "did not find expected key"
+      - "mapping values are not allowed"
+    weight: 0.82
+  root_causes:
+    - title: "YAML syntax error"
+      description: >-
+        Bad indentation, a tab character, an unquoted colon, or a missing key breaks
+        YAML parsing.
+      confidence: 0.6
+      category: configuration
+    - title: "Schema violation"
+      description: >-
+        A key is misspelled, a job lacks a script, or a stage/keyword is used
+        incorrectly per the CI schema.
+      confidence: 0.5
+      category: configuration
+    - title: "Broken include/template"
+      description: >-
+        An included or extended template is missing, unreachable, or itself invalid,
+        invalidating the whole config.
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "cat .gitlab-ci.yml"
+      explanation: "Inspects the raw file to locate the indentation/syntax problem."
+      expected_output: "The CI config; look at the line the error references."
+    - command: "python -c 'import sys,yaml; yaml.safe_load(open(\".gitlab-ci.yml\"))'"
+      explanation: "Validates pure YAML syntax locally before pushing."
+      expected_output: "No output on success, or a YAML error with line/column."
+      platform: "any host with python+pyyaml"
+  suggested_fixes:
+    - title: "Fix the YAML at the reported line"
+      description: >-
+        Correct indentation/quoting (use spaces, never tabs) and re-validate with the
+        pipeline editor's lint.
+      snippet: |
+        build:
+          stage: build
+          script:
+            - make build
+    - title: "Validate includes/templates"
+      description: >-
+        Ensure every include path exists and resolves, then re-lint the merged config.
+  references:
+    - title: "Fixing invalid GitLab CI YAML"
+      url: "https://devopsaitoolkit.com/blog/gitlab-ci-invalid-config-yaml"
+      source: "devopsaitoolkit"
+    - title: "GitLab CI/CD YAML syntax reference"
+      url: "https://docs.gitlab.com/ci/yaml/"
+      source: "official"
+  best_practices:
+    - "Use the pipeline editor / CI lint before merging config changes."
+    - "Use spaces for indentation; configure your editor to reject tabs."
+  prevention:
+    - "Lint .gitlab-ci.yml in a pre-commit hook or merge-request check."
+  tags: [yaml, config, lint]
+
+- id: gitlab_ci.prepare_environment_failed
+  technology: gitlab_ci
+  title: "Prepare environment: exit status 1"
+  summary: >-
+    The job failed before the script ran, during the runner's prepare phase —
+    usually a shell-profile error, container/image problem, or executor setup
+    failure.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Preparing environment"
+      - "prepare environment: exit status 1"
+      - "Failed to prepare environment"
+    weight: 0.8
+  root_causes:
+    - title: "Error in shell profile (.bashrc/.bash_logout)"
+      description: >-
+        On shell executors, a command in the user's profile returns non-zero during
+        prepare, failing the whole job.
+      confidence: 0.55
+      category: configuration
+    - title: "Image cannot be pulled or started"
+      description: >-
+        For docker executors, the job image fails to pull or start, so the environment
+        cannot be prepared.
+      confidence: 0.5
+      category: configuration
+    - title: "Executor/runner host issue"
+      description: >-
+        Disk full, permissions, or a broken executor (docker/k8s) prevents the runner
+        from setting up the build.
+      confidence: 0.4
+      category: environment
+  diagnostic_commands:
+    - command: "cat /etc/gitlab-runner/config.toml"
+      explanation: "Shows the executor type and image so you know which prepare path runs."
+      expected_output: "The [[runners]] executor and default image settings."
+      platform: "gitlab-runner host"
+    - command: "journalctl -u gitlab-runner --no-pager -n 100"
+      explanation: "Surfaces the runner's own logs around the prepare failure."
+      expected_output: "The prepare-phase error (profile, image pull, or executor)."
+      platform: "linux with systemd"
+    - command: "df -h"
+      explanation: "Checks for a full disk on the runner host that breaks prepare."
+      expected_output: "Use% well below 100% on the runner's build path."
+      platform: "linux"
+  suggested_fixes:
+    - title: "Fix the shell profile or use a clean executor"
+      description: >-
+        Remove the failing command from the runner user's profile, or switch the job to
+        a docker/k8s executor with a known-good image.
+    - title: "Ensure the job image is pullable"
+      description: >-
+        Verify the image reference and registry credentials so the docker executor can
+        start it.
+      snippet: |
+        default:
+          image: registry.example.com/ci/base:1.0
+  references:
+    - title: "GitLab CI prepare environment exit status 1"
+      url: "https://devopsaitoolkit.com/blog/gitlab-ci-prepare-environment-exit-status-1"
+      source: "devopsaitoolkit"
+    - title: "GitLab Runner shell executor"
+      url: "https://docs.gitlab.com/runner/executors/shell/"
+      source: "official"
+  best_practices:
+    - "Prefer container executors over shell for clean, reproducible prepare."
+    - "Keep the runner user's shell profile minimal and side-effect-free."
+  prevention:
+    - "Monitor runner host disk and image registry reachability."
+  tags: [runner, prepare, executor]
+
+- id: gitlab_ci.registry_401_unauthorized
+  technology: gitlab_ci
+  title: "401 Unauthorized pulling/pushing to registry"
+  summary: >-
+    A job cannot authenticate to a container registry (HTTP 401), so the image
+    pull or push is denied — usually a missing/expired credential or insufficient
+    token scope.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "401 Unauthorized"
+      - "unauthorized: HTTP Basic: Access denied"
+      - "denied: access forbidden"
+      - "unauthorized: authentication required"
+    weight: 0.82
+  root_causes:
+    - title: "Not logged in to the registry"
+      description: >-
+        The job never authenticated (no docker login / DOCKER_AUTH_CONFIG) before
+        pulling or pushing.
+      confidence: 0.55
+      category: authentication
+    - title: "Expired or wrong credentials"
+      description: >-
+        The token, deploy token, or password is expired, revoked, or scoped to a
+        different project.
+      confidence: 0.5
+      category: authentication
+    - title: "Insufficient token scope"
+      description: >-
+        CI_JOB_TOKEN or a PAT lacks read_registry/write_registry scope for the target
+        project.
+      confidence: 0.4
+      category: authorization
+  diagnostic_commands:
+    - command: "cat $HOME/.docker/config.json"
+      explanation: "Shows which registries the job is authenticated to in this environment."
+      expected_output: "An auths entry for the target registry, or none."
+      platform: "docker executor"
+    - command: "env | grep -E 'CI_REGISTRY|DOCKER_AUTH_CONFIG'"
+      explanation: "Confirms the registry variables/credentials are present in the job."
+      expected_output: "CI_REGISTRY and a credential variable populated."
+  suggested_fixes:
+    - title: "Authenticate to the GitLab registry in the job"
+      description: >-
+        Log in with the predefined CI registry variables before pull/push.
+      snippet: |
+        before_script:
+          - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - title: "Grant the token the right registry scope"
+      description: >-
+        Use a deploy token or job token with read_registry/write_registry for the
+        target project.
+  references:
+    - title: "GitLab CI registry 401 unauthorized"
+      url: "https://devopsaitoolkit.com/blog/gitlab-ci-registry-401-unauthorized"
+      source: "devopsaitoolkit"
+    - title: "Authenticate to the GitLab container registry"
+      url: "https://docs.gitlab.com/user/packages/container_registry/authenticate_with_container_registry/"
+      source: "official"
+  warnings:
+    - message: "Never echo registry passwords into logs; use --password-stdin and masked variables."
+      severity: high
+  best_practices:
+    - "Use CI_REGISTRY_USER/PASSWORD predefined variables for the built-in registry."
+    - "Mask and protect all registry credential variables."
+  prevention:
+    - "Rotate deploy tokens before expiry and verify scopes in CI."
+  tags: [registry, auth, login]
+
+- id: gitlab_ci.could_not_read_username
+  technology: gitlab_ci
+  title: "Could not read Username (CI_JOB_TOKEN clone)"
+  summary: >-
+    A git operation in CI fails with 'could not read Username' because it tried to
+    clone/fetch over HTTPS without credentials — typically a submodule or
+    dependency on another repo not authorized via CI_JOB_TOKEN.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "could not read Username for"
+      - "fatal: could not read Username"
+      - "terminal prompts disabled"
+      - "Authentication failed for .*\\.git"
+    weight: 0.82
+  root_causes:
+    - title: "Cross-repo access not allowed for CI_JOB_TOKEN"
+      description: >-
+        The job token tries to clone another project (submodule or package) that does
+        not allow this project in its job-token allowlist.
+      confidence: 0.55
+      category: authorization
+    - title: "HTTPS URL without embedded credentials"
+      description: >-
+        A submodule or dependency uses a plain https:// git URL, so git prompts for a
+        username that CI cannot provide.
+      confidence: 0.5
+      category: configuration
+    - title: "Token expired or insufficient scope"
+      description: >-
+        A custom token used instead of CI_JOB_TOKEN is expired or lacks read_repository
+        scope.
+      confidence: 0.4
+      category: authentication
+  diagnostic_commands:
+    - command: "cat .gitmodules"
+      explanation: "Shows submodule URLs to spot plain HTTPS references that need credentials."
+      expected_output: "Submodule entries; look for https:// URLs without tokens."
+    - command: "git config --get-regexp 'url\\..*\\.insteadof'"
+      explanation: "Reveals any URL-rewrite rules that inject CI credentials."
+      expected_output: "An insteadOf rewrite for the registry/git host, or none."
+  suggested_fixes:
+    - title: "Rewrite git URLs to use CI_JOB_TOKEN"
+      description: >-
+        Configure git to clone via the job token so no username prompt is needed.
+      snippet: |
+        before_script:
+          - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/".insteadOf "https://${CI_SERVER_HOST}/"
+    - title: "Allow this project in the target's job-token allowlist"
+      description: >-
+        In the depended-on project's CI/CD settings, add this project to the
+        CI_JOB_TOKEN allowlist so cross-repo clones are authorized.
+  references:
+    - title: "GitLab CI could not read Username (CI_JOB_TOKEN)"
+      url: "https://devopsaitoolkit.com/blog/gitlab-ci-could-not-read-username"
+      source: "devopsaitoolkit"
+    - title: "GitLab CI/CD job token"
+      url: "https://docs.gitlab.com/ci/jobs/ci_job_token/"
+      source: "official"
+  warnings:
+    - message: "Do not hardcode personal access tokens in .gitmodules or CI files; use CI_JOB_TOKEN URL rewriting."
+      severity: high
+  best_practices:
+    - "Use CI_JOB_TOKEN URL rewriting for internal submodule/dependency clones."
+    - "Maintain explicit job-token allowlists between dependent projects."
+  prevention:
+    - "Audit submodule URLs to ensure none require interactive credentials."
+  tags: [git, job-token, submodules]

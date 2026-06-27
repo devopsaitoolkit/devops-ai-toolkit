@@ -1,0 +1,355 @@
+- id: linux.oom_killer
+  technology: linux
+  title: "Out of memory: oom-killer invoked"
+  summary: >-
+    The kernel ran out of available memory and the OOM killer terminated a
+    process to reclaim RAM, leaving a 'Killed process' message in the log.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Out of memory: Killed process"
+      - "invoked oom-killer"
+      - "oom_reaper"
+      - "Memory cgroup out of memory"
+    weight: 0.82
+  root_causes:
+    - title: "A process exceeded available physical memory"
+      description: >-
+        One workload (or a leak) grew until total demand outstripped RAM plus
+        swap, forcing the kernel to kill the highest-scoring victim.
+      confidence: 0.65
+      category: resources
+    - title: "cgroup / container memory limit reached"
+      description: >-
+        A container or systemd unit hit its memory.max, so the kernel OOM-killed
+        a process inside that cgroup even though the host had free RAM.
+      confidence: 0.5
+      category: configuration
+    - title: "No or insufficient swap under pressure"
+      description: >-
+        With little/no swap, a transient memory spike has nowhere to spill and
+        immediately triggers the OOM killer.
+      confidence: 0.4
+      category: configuration
+    - title: "Memory leak in a long-running service"
+      description: >-
+        A service slowly grows its RSS over hours/days until it triggers OOM.
+      confidence: 0.4
+      category: application
+  diagnostic_commands:
+    - command: "dmesg -T | grep -i 'killed process'"
+      explanation: "Shows which process the OOM killer chose and when."
+      expected_output: "Out of memory: Killed process <pid> (<name>) total-vm:..., anon-rss:..."
+      platform: "affected host"
+    - command: "free -h"
+      explanation: "Shows current memory and swap usage to gauge headroom."
+      expected_output: "available column low and swap heavily used or absent."
+    - command: "journalctl -k --since '-1h' | grep -i oom"
+      explanation: "Surfaces kernel OOM events in the last hour with context."
+      expected_output: "oom-killer invocation and the victim's memory accounting."
+  suggested_fixes:
+    - title: "Right-size memory limits or add capacity/swap"
+      description: >-
+        Raise the cgroup/container memory limit to the real working set, add RAM
+        or swap, or move the workload to a larger node.
+      snippet: |
+        # systemd unit limit
+        [Service]
+        MemoryMax=2G
+    - title: "Fix the leak or cap the offender"
+      description: "Profile the growing process and bound its memory; tune heap/cache sizes."
+  references:
+    - title: "Understanding and stopping the Linux OOM killer"
+      url: "https://devopsaitoolkit.com/blog/linux-out-of-memory-oom-killer"
+      source: "devopsaitoolkit"
+    - title: "Linux kernel: Out Of Memory management"
+      url: "https://docs.kernel.org/admin-guide/mm/concepts.html"
+      source: "official docs"
+  warnings:
+    - message: "Adding swap masks memory pressure; investigate the leak rather than only enlarging swap."
+      severity: medium
+  best_practices:
+    - "Set memory limits from observed P95 usage, not guesses."
+    - "Monitor MemAvailable and alert before the host runs out."
+  prevention:
+    - "Load-test to find real working sets before sizing limits."
+  tags: [memory, oom, kernel]
+
+- id: linux.no_space_left_on_device
+  technology: linux
+  title: "No space left on device (ENOSPC)"
+  summary: >-
+    A write failed because the filesystem is out of free blocks or out of inodes,
+    causing applications to error or crash.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "No space left on device"
+      - "ENOSPC"
+      - "write error.*No space"
+    weight: 0.8
+  root_causes:
+    - title: "Filesystem out of data blocks"
+      description: >-
+        Logs, caches, images, or core dumps filled the volume to 100% use, so no
+        new data can be written.
+      confidence: 0.6
+      category: storage
+    - title: "Out of inodes despite free space"
+      description: >-
+        Millions of tiny files exhausted the inode table; df shows free space but
+        df -i shows IUse% at 100%.
+      confidence: 0.45
+      category: storage
+    - title: "Deleted-but-open files holding space"
+      description: >-
+        A file was unlinked but a process still holds it open, so the blocks are
+        not freed until the process closes the handle.
+      confidence: 0.4
+      category: application
+  diagnostic_commands:
+    - command: "df -h"
+      explanation: "Shows per-filesystem used/free space to find the full volume."
+      expected_output: "A mount at or near 100% Use%."
+      platform: "affected host"
+    - command: "df -i"
+      explanation: "Shows inode usage; reveals inode exhaustion when df has free space."
+      expected_output: "IUse% near 100% on the affected filesystem."
+    - command: "du -xhd1 / 2>/dev/null | sort -h | tail"
+      explanation: "Finds the largest directories consuming the volume (stays on one filesystem)."
+      expected_output: "The biggest space consumers, e.g. /var/log or /var/lib."
+    - command: "lsof +L1"
+      explanation: "Lists open files with link count 0 (deleted but still held), reclaimable on close."
+      expected_output: "Processes holding deleted files; restart them to free space."
+  suggested_fixes:
+    - title: "Reclaim space and bound growth"
+      description: >-
+        Rotate/compress logs, prune caches and old images, and add log rotation
+        so the volume cannot fill again. Restart processes holding deleted files.
+      snippet: |
+        journalctl --vacuum-size=200M
+        # add /etc/logrotate.d entry for the noisy app
+    - title: "Fix inode exhaustion or grow the volume"
+      description: "Delete swarms of tiny files, or resize the filesystem/add a larger disk."
+  references:
+    - title: "Fixing 'No space left on device' on Linux"
+      url: "https://devopsaitoolkit.com/blog/linux-no-space-left-on-device"
+      source: "devopsaitoolkit"
+    - title: "df(1) manual"
+      url: "https://man7.org/linux/man-pages/man1/df.1.html"
+      source: "official docs"
+  best_practices:
+    - "Alert on disk usage at 80% so you act before 100%."
+    - "Configure log rotation for every service that writes logs."
+  prevention:
+    - "Separate volatile data (logs, caches) onto their own volume."
+  tags: [disk, storage, inodes]
+
+- id: linux.segfault
+  technology: linux
+  title: "Process segfault / general protection fault"
+  summary: >-
+    A process crashed with a segmentation fault after accessing invalid memory;
+    the kernel logs the faulting address and library.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "segfault at"
+      - "general protection fault"
+      - "Segmentation fault"
+      - "signal SIGSEGV"
+      - "core dumped"
+    weight: 0.72
+  root_causes:
+    - title: "Bug in the application or a native library"
+      description: >-
+        A null/dangling pointer, buffer overrun, or stack overflow in the binary
+        or a linked .so dereferences invalid memory.
+      confidence: 0.6
+      category: application
+    - title: "Incompatible or corrupted shared library"
+      description: >-
+        A mismatched library version or corrupted .so makes the process fault at
+        a specific address inside that library.
+      confidence: 0.45
+      category: configuration
+    - title: "Faulty hardware memory"
+      description: >-
+        Bad RAM bit-flips corrupt process memory and produce random segfaults
+        across unrelated programs.
+      confidence: 0.3
+      category: hardware
+  diagnostic_commands:
+    - command: "dmesg -T | grep -i segfault"
+      explanation: "Shows the faulting process, address, and the library/offset where it crashed."
+      expected_output: "<proc>[pid]: segfault at <addr> ip <ip> sp <sp> in <lib>[...]."
+      platform: "affected host"
+    - command: "coredumpctl list"
+      explanation: "Lists captured core dumps (when systemd-coredump is enabled) for inspection."
+      expected_output: "Recent cores with PID, signal SIGSEGV, and the executable."
+    - command: "ldd /path/to/binary"
+      explanation: "Checks resolved shared libraries to spot a missing or wrong version."
+      expected_output: "All dependencies resolved; 'not found' indicates a library problem."
+  suggested_fixes:
+    - title: "Capture a core dump and get a backtrace"
+      description: >-
+        Enable systemd-coredump, reproduce the crash, then open the core with gdb
+        to read the backtrace and identify the faulting frame.
+      snippet: |
+        coredumpctl gdb <pid-or-name>
+        # then: bt
+    - title: "Update or roll back the offending package/library"
+      description: "Match library versions to the binary, reinstall corrupted packages, or upgrade to a fixed release."
+  references:
+    - title: "Debugging Linux segmentation faults"
+      url: "https://devopsaitoolkit.com/blog/linux-segfault-debugging"
+      source: "devopsaitoolkit"
+    - title: "systemd-coredump and coredumpctl"
+      url: "https://www.freedesktop.org/software/systemd/man/latest/coredumpctl.html"
+      source: "official docs"
+  best_practices:
+    - "Keep coredumps enabled in non-prod to capture crashes for analysis."
+    - "Run memtest on hosts with random, cross-process segfaults."
+  prevention:
+    - "Pin and test library versions; ship debug symbols for crash triage."
+  tags: [crash, segfault, debugging]
+
+- id: linux.read_only_file_system
+  technology: linux
+  title: "Read-only file system (EROFS)"
+  summary: >-
+    Writes fail with 'Read-only file system' because the kernel remounted the
+    filesystem read-only, usually after detecting an error.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Read-only file system"
+      - "EROFS"
+      - "Remounting filesystem read-only"
+      - "mount.*ro,"
+    weight: 0.8
+  root_causes:
+    - title: "Filesystem errors triggered an emergency remount-ro"
+      description: >-
+        The kernel detected metadata corruption and, per the errors=remount-ro
+        mount option, switched the volume to read-only to prevent damage.
+      confidence: 0.6
+      category: storage
+    - title: "Underlying disk failing or I/O errors"
+      description: >-
+        Failing storage produces I/O errors that the filesystem responds to by
+        going read-only.
+      confidence: 0.45
+      category: hardware
+    - title: "Mounted read-only by configuration"
+      description: >-
+        The mount was intentionally ro in fstab or a read-only root image, so any
+        write fails by design.
+      confidence: 0.35
+      category: configuration
+  diagnostic_commands:
+    - command: "mount | grep ' ro,'"
+      explanation: "Lists filesystems currently mounted read-only."
+      expected_output: "The affected mount shown with the 'ro' option."
+      platform: "affected host"
+    - command: "dmesg -T | grep -iE 'remount|EXT4-fs error|I/O error'"
+      explanation: "Reveals the kernel error that forced the remount and any disk I/O errors."
+      expected_output: "EXT4-fs error / I/O error lines preceding the remount-ro."
+    - command: "journalctl -k -b | grep -i 'read-only'"
+      explanation: "Shows when in this boot the filesystem went read-only and why."
+      expected_output: "A timestamped remounting read-only message with the cause."
+  suggested_fixes:
+    - title: "Check the disk, run fsck, then remount read-write"
+      description: >-
+        Inspect SMART data and dmesg; on a non-root volume unmount and fsck it,
+        then remount rw. For root, fsck at next boot via a forced check.
+      snippet: |
+        # after fsck on an unmounted, healthy device:
+        mount -o remount,rw /mountpoint
+    - title: "Replace failing storage"
+      description: "If SMART/I/O errors indicate hardware failure, migrate data and swap the disk."
+  references:
+    - title: "Recovering from a read-only Linux filesystem"
+      url: "https://devopsaitoolkit.com/blog/linux-read-only-file-system"
+      source: "devopsaitoolkit"
+    - title: "mount(8) manual: error behaviour"
+      url: "https://man7.org/linux/man-pages/man8/mount.8.html"
+      source: "official docs"
+  warnings:
+    - message: "Remounting rw without running fsck can worsen corruption; check the disk first."
+      severity: high
+  best_practices:
+    - "Monitor SMART and dmesg for early disk-error warnings."
+    - "Keep errors=remount-ro so corruption is contained, not propagated."
+  prevention:
+    - "Replace disks showing reallocated sectors before they fail hard."
+  tags: [filesystem, storage, mount]
+
+- id: linux.too_many_open_files
+  technology: linux
+  title: "Too many open files (EMFILE / ENFILE)"
+  summary: >-
+    A process or the system hit the open file-descriptor limit, so new files,
+    sockets, or connections fail to open.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Too many open files"
+      - "EMFILE"
+      - "ENFILE"
+      - "accept: too many open files"
+      - "socket: too many open files"
+    weight: 0.8
+  root_causes:
+    - title: "Per-process fd limit (RLIMIT_NOFILE) too low"
+      description: >-
+        The soft nofile limit is below what a high-connection service needs, so
+        it exhausts descriptors under load.
+      confidence: 0.6
+      category: configuration
+    - title: "File descriptor leak in the application"
+      description: >-
+        The process opens files/sockets without closing them, steadily climbing
+        toward the limit until it fails.
+      confidence: 0.5
+      category: application
+    - title: "System-wide fd limit (fs.file-max) reached"
+      description: >-
+        Many processes together exhausted the global descriptor table, not just
+        one process.
+      confidence: 0.3
+      category: configuration
+  diagnostic_commands:
+    - command: "cat /proc/<pid>/limits | grep 'open files'"
+      explanation: "Shows the soft and hard nofile limit the process is running with."
+      expected_output: "Max open files  <soft>  <hard>  files."
+      platform: "affected host"
+    - command: "ls /proc/<pid>/fd | wc -l"
+      explanation: "Counts the process's currently open descriptors versus its limit."
+      expected_output: "A number; if close to the soft limit the process is exhausting fds."
+    - command: "sysctl fs.file-nr"
+      explanation: "Reports allocated vs maximum system-wide file handles."
+      expected_output: "allocated  unused  max; allocated near max means global exhaustion."
+  suggested_fixes:
+    - title: "Raise the descriptor limit for the service"
+      description: >-
+        Increase LimitNOFILE for the systemd unit (or nofile in limits.conf) to a
+        value sized for peak connections.
+      snippet: |
+        [Service]
+        LimitNOFILE=65535
+    - title: "Fix the descriptor leak"
+      description: "Audit the app for unclosed files/sockets (e.g. via lsof) and close them; pool connections."
+  references:
+    - title: "Fixing 'Too many open files' on Linux"
+      url: "https://devopsaitoolkit.com/blog/linux-too-many-open-files"
+      source: "devopsaitoolkit"
+    - title: "setrlimit(2) / RLIMIT_NOFILE"
+      url: "https://man7.org/linux/man-pages/man2/setrlimit.2.html"
+      source: "official docs"
+  best_practices:
+    - "Set service fd limits explicitly rather than relying on defaults."
+    - "Monitor open fd counts for connection-heavy services."
+  prevention:
+    - "Use connection pooling and ensure descriptors are closed on every path."
+  tags: [limits, file-descriptors, sockets]

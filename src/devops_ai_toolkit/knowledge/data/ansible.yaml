@@ -1,0 +1,351 @@
+- id: ansible.unreachable_ssh_permission_denied
+  technology: ansible
+  title: "Host UNREACHABLE: Permission denied (publickey) / SSH failure"
+  summary: >-
+    Ansible cannot establish an SSH connection to a host, marking it UNREACHABLE
+    with a permission-denied or connection error, so no tasks run there.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "UNREACHABLE"
+      - "Permission denied \\(publickey"
+      - "Failed to connect to the host via ssh"
+      - "Connection timed out"
+      - "Host key verification failed"
+    weight: 0.78
+  root_causes:
+    - title: "Wrong SSH user or key for the target"
+      description: >-
+        ansible_user/ansible_ssh_private_key_file does not match an authorized
+        key on the host, so the publickey auth is refused.
+      confidence: 0.6
+      category: authentication
+    - title: "Host unreachable on the network"
+      description: >-
+        DNS, firewall, security group, or a down host blocks port 22, producing a
+        timeout or refused connection.
+      confidence: 0.45
+      category: network
+    - title: "Host key mismatch / strict checking"
+      description: >-
+        A changed or unknown host key with host key checking enabled aborts the
+        connection.
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "ansible <host> -m ping -vvv"
+      explanation: "Runs the connection plugin with verbose output showing the exact SSH command and failure."
+      expected_output: "SUCCESS with pong, or the precise ssh error (auth, timeout, host key)."
+      platform: "Ansible control node"
+    - command: "ssh -vvv -i <key> <user>@<host>"
+      explanation: "Reproduces the SSH login Ansible attempts, exposing auth and key negotiation details."
+      expected_output: "Authentication succeeded, or 'Permission denied (publickey)' with offered keys."
+    - command: "ansible-inventory --host <host>"
+      explanation: "Shows the resolved connection variables (user, host, key, port) for the host."
+      expected_output: "ansible_user, ansible_host, ansible_port, and key path as Ansible sees them."
+  suggested_fixes:
+    - title: "Set the correct user, key, and port"
+      description: >-
+        Point Ansible at a user whose authorized_keys contains your public key,
+        and verify ansible_host/port. Test with ssh first.
+      snippet: |
+        [web]
+        web1 ansible_host=10.0.0.7 ansible_user=deploy ansible_port=22
+        web1 ansible_ssh_private_key_file=~/.ssh/deploy_ed25519
+    - title: "Resolve host key / network blockers"
+      description: "Open port 22, refresh known_hosts for changed keys, or set host_key_checking appropriately for your environment."
+  references:
+    - title: "Fixing Ansible UNREACHABLE SSH errors"
+      url: "https://devopsaitoolkit.com/blog/ansible-unreachable-ssh-permission-denied"
+      source: "devopsaitoolkit"
+    - title: "Ansible connection details and SSH"
+      url: "https://docs.ansible.com/ansible/latest/inventory_guide/connection_details.html"
+      source: "official docs"
+  best_practices:
+    - "Verify ssh access manually before running a play against new hosts."
+    - "Manage host keys deliberately rather than disabling checking globally."
+  prevention:
+    - "Standardize the connection user and key path in inventory/group_vars."
+  tags: [ssh, connection, authentication]
+
+- id: ansible.module_failure_nonzero_rc
+  technology: ansible
+  title: "Task failed: module non-zero return code"
+  summary: >-
+    A module or command task reported failure because the underlying action
+    returned a non-zero rc, halting the play for that host.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "non-zero return code"
+      - 'FAILED! =>'
+      - '\"rc\": [1-9]'
+      - "MODULE FAILURE"
+      - "fatal: \\["
+    weight: 0.7
+  root_causes:
+    - title: "The command/module action itself failed on the host"
+      description: >-
+        The package, service, shell, or command genuinely failed (missing
+        package, bad path, service error) and returned non-zero rc.
+      confidence: 0.6
+      category: application
+    - title: "Wrong privilege escalation"
+      description: >-
+        The task needs root but become is off or sudo failed, so the action is
+        denied and returns non-zero.
+      confidence: 0.45
+      category: authentication
+    - title: "Missing interpreter or dependency on the target"
+      description: >-
+        Python or a required binary is absent on the host, so the module cannot
+        execute and reports MODULE FAILURE.
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "ansible-playbook <play>.yml --limit <host> -vvv"
+      explanation: "Re-runs against the one host with full verbosity to see stdout/stderr and rc."
+      expected_output: "The module's msg, stdout, stderr, and rc value pinpointing the failure."
+      platform: "Ansible control node"
+    - command: "ansible <host> -m setup -a 'filter=ansible_python*'"
+      explanation: "Checks the discovered Python interpreter on the target, a common module-failure cause."
+      expected_output: "ansible_python_interpreter and version; missing/old Python signals the issue."
+    - command: "ansible <host> -b -m command -a 'id'"
+      explanation: "Verifies privilege escalation (become) is working as expected."
+      expected_output: "uid=0(root) when become succeeds; a sudo error otherwise."
+  suggested_fixes:
+    - title: "Fix the underlying action and rerun"
+      description: >-
+        Read the verbose stderr/msg, correct the failing command/package/path,
+        and rerun limited to the host.
+    - title: "Enable correct escalation or set the interpreter"
+      description: "Add become: true where root is needed, and set ansible_python_interpreter for the target OS."
+      snippet: |
+        - hosts: db
+          become: true
+          vars:
+            ansible_python_interpreter: /usr/bin/python3
+  references:
+    - title: "Debugging Ansible module failures and non-zero rc"
+      url: "https://devopsaitoolkit.com/blog/ansible-module-failure-nonzero-rc"
+      source: "devopsaitoolkit"
+    - title: "Ansible error handling in playbooks"
+      url: "https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_error_handling.html"
+      source: "official docs"
+  best_practices:
+    - "Run failing plays with -vvv and --limit to isolate the host and cause."
+    - "Use modules over raw shell so failures report structured errors."
+  prevention:
+    - "Validate target prerequisites (Python, packages) in a pre-task."
+  tags: [module, failure, become]
+
+- id: ansible.variable_undefined
+  technology: ansible
+  title: "'<var>' is undefined"
+  summary: >-
+    Templating failed because a variable referenced in a task or template is not
+    defined for the host, aborting the task.
+  applies_to: [log, command_output, error_string, yaml]
+  match:
+    any_of:
+      - "is undefined"
+      - "AnsibleUndefinedVariable"
+      - "'dict object' has no attribute"
+      - "has no attribute"
+    weight: 0.74
+  root_causes:
+    - title: "Variable not defined for this host/scope"
+      description: >-
+        The var is missing from inventory, group_vars/host_vars, role defaults,
+        or vars, so Jinja resolution fails for that host.
+      confidence: 0.6
+      category: configuration
+    - title: "Typo or wrong nesting in the variable name"
+      description: >-
+        A misspelled key or wrong dictionary path ('dict object has no
+        attribute') references a value that does not exist.
+      confidence: 0.5
+      category: configuration
+    - title: "Fact or registered var not yet set"
+      description: >-
+        A variable expected from gather_facts or a prior registered result is
+        used before it is populated (e.g. facts disabled).
+      confidence: 0.4
+      category: application
+  diagnostic_commands:
+    - command: "ansible <host> -m debug -a 'var=<var>'"
+      explanation: "Prints the variable's resolved value (or undefined) for a specific host."
+      expected_output: "The value when defined; 'VARIABLE IS NOT DEFINED!' otherwise."
+      platform: "Ansible control node"
+    - command: "ansible-inventory --host <host> --yaml"
+      explanation: "Dumps all variables Ansible resolved for the host to spot what is missing."
+      expected_output: "The merged variable set; confirm the expected key is present and spelled right."
+    - command: "ansible <host> -m setup"
+      explanation: "Lists gathered facts when the missing var is expected to come from facts."
+      expected_output: "The ansible_facts dictionary; verify the fact you reference exists."
+  suggested_fixes:
+    - title: "Define the variable in the right scope"
+      description: >-
+        Add the var to inventory/group_vars/host_vars or role defaults, fixing
+        any typo or nesting in its name.
+      snippet: |
+        # group_vars/web.yml
+        app_port: 8080
+    - title: "Guard optional variables with a default"
+      description: "Use the default filter so optional vars degrade gracefully instead of erroring."
+      snippet: |
+        listen_port: "{{ app_port | default(8080) }}"
+  references:
+    - title: "Fixing 'variable is undefined' in Ansible"
+      url: "https://devopsaitoolkit.com/blog/ansible-variable-is-undefined"
+      source: "devopsaitoolkit"
+    - title: "Using Variables in Ansible"
+      url: "https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_variables.html"
+      source: "official docs"
+  best_practices:
+    - "Set sane defaults in role defaults/main.yml for optional variables."
+    - "Keep variable precedence in mind when the same name lives in many scopes."
+  prevention:
+    - "Use the default filter for any variable that may be unset."
+  tags: [variables, templating, jinja]
+
+- id: ansible.could_not_resolve_module
+  technology: ansible
+  title: "Couldn't resolve module/action '<name>'"
+  summary: >-
+    Ansible cannot find the requested module or action, usually because the
+    required collection is not installed or the FQCN is wrong.
+  applies_to: [log, command_output, error_string, yaml]
+  match:
+    any_of:
+      - "couldn't resolve module/action"
+      - "Could not find imported module"
+      - "ERROR! couldn't resolve module"
+      - "FQCN"
+    weight: 0.76
+  root_causes:
+    - title: "Required collection not installed"
+      description: >-
+        The module lives in a collection (e.g. community.general) that is not
+        installed, so Ansible cannot resolve it.
+      confidence: 0.6
+      category: configuration
+    - title: "Wrong or missing fully-qualified name"
+      description: >-
+        Using a short module name that moved to a collection, or a typo in the
+        namespace.collection.module path.
+      confidence: 0.5
+      category: configuration
+    - title: "Collections path / requirements not applied"
+      description: >-
+        requirements.yml was not installed, or collections_paths does not include
+        where the collection lives.
+      confidence: 0.35
+      category: configuration
+  diagnostic_commands:
+    - command: "ansible-galaxy collection list"
+      explanation: "Lists installed collections so you can confirm the module's collection is present."
+      expected_output: "The collection (e.g. community.general) with a version, or absent if missing."
+      platform: "Ansible control node"
+    - command: "ansible-doc -l | grep <name>"
+      explanation: "Searches available modules/plugins for the name to find the correct FQCN."
+      expected_output: "The fully-qualified module name to use, or no result if unavailable."
+    - command: "ansible-config dump | grep -i collections_paths"
+      explanation: "Shows where Ansible looks for collections."
+      expected_output: "The configured collections_paths; verify your collection is on one of them."
+  suggested_fixes:
+    - title: "Install the collection and use its FQCN"
+      description: >-
+        Install the needed collection (pin it in requirements.yml) and reference
+        the module by its fully-qualified name.
+      snippet: |
+        # requirements.yml
+        collections:
+          - name: community.general
+            version: ">=8.0.0"
+        # then: ansible-galaxy collection install -r requirements.yml
+    - title: "Correct the module name"
+      description: "Replace the short/typo'd name with the correct namespace.collection.module."
+  references:
+    - title: "Resolving Ansible 'couldn't resolve module/action'"
+      url: "https://devopsaitoolkit.com/blog/ansible-could-not-resolve-module"
+      source: "devopsaitoolkit"
+    - title: "Using Ansible collections"
+      url: "https://docs.ansible.com/ansible/latest/collections_guide/index.html"
+      source: "official docs"
+  best_practices:
+    - "Pin collection dependencies in requirements.yml and install in CI."
+    - "Reference modules by FQCN for clarity and forward compatibility."
+  prevention:
+    - "Install requirements.yml as part of provisioning the control node."
+  tags: [collections, modules, fqcn]
+
+- id: ansible.yaml_syntax_error
+  technology: ansible
+  title: "YAML syntax error in playbook"
+  summary: >-
+    Ansible failed to parse a playbook or vars file because of invalid YAML,
+    stopping before any task runs.
+  applies_to: [log, command_output, error_string, yaml]
+  match:
+    any_of:
+      - "Syntax Error while loading YAML"
+      - "could not find expected ':'"
+      - "mapping values are not allowed"
+      - "found a tab character"
+      - "did not find expected key"
+    weight: 0.76
+  root_causes:
+    - title: "Indentation or tab error"
+      description: >-
+        Inconsistent spaces or a literal tab breaks the YAML block structure, so
+        the parser cannot build the mapping/list.
+      confidence: 0.6
+      category: configuration
+    - title: "Unquoted special characters or colons"
+      description: >-
+        A value containing a colon, '{{', '%', or leading special char is left
+        unquoted, confusing the parser.
+      confidence: 0.5
+      category: configuration
+    - title: "Missing key, dash, or unbalanced quotes/brackets"
+      description: >-
+        A list item missing its '- ', an absent ':' after a key, or unbalanced
+        quotes/brackets produces a parse error.
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "ansible-playbook <play>.yml --syntax-check"
+      explanation: "Parses the playbook and reports the exact YAML/structure error and line."
+      expected_output: "No errors when valid; otherwise the file, line, and column of the problem."
+      platform: "Ansible control node"
+    - command: "ansible-lint <play>.yml"
+      explanation: "Flags YAML and Ansible style issues, often pointing at the offending construct."
+      expected_output: "A list of findings with line numbers, or clean output."
+    - command: "yamllint <play>.yml"
+      explanation: "Validates pure YAML formatting (indentation, tabs, quoting) independent of Ansible."
+      expected_output: "Errors/warnings with line:column, or no output when valid."
+  suggested_fixes:
+    - title: "Fix indentation and quote special values"
+      description: >-
+        Use consistent two-space indentation (never tabs) and quote any value
+        containing colons, braces, or special characters.
+      snippet: |
+        - name: Set message
+          ansible.builtin.set_fact:
+            greeting: "ratio is 3:1"
+    - title: "Validate before running"
+      description: "Run --syntax-check and yamllint in CI so malformed YAML never reaches a run."
+  references:
+    - title: "Fixing YAML syntax errors in Ansible playbooks"
+      url: "https://devopsaitoolkit.com/blog/ansible-yaml-syntax-error"
+      source: "devopsaitoolkit"
+    - title: "Ansible YAML syntax guide"
+      url: "https://docs.ansible.com/ansible/latest/reference_appendices/YAMLSyntax.html"
+      source: "official docs"
+  best_practices:
+    - "Configure your editor to show whitespace and forbid tabs in YAML."
+    - "Quote values that contain colons or Jinja braces."
+  prevention:
+    - "Gate playbooks with --syntax-check and yamllint in CI."
+  tags: [yaml, syntax, playbook]

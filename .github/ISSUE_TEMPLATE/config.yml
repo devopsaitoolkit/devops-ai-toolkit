@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/devopsaitoolkit/devops-ai-toolkit/tree/main/docs
+    about: Read the docs before filing an issue — usage, knowledge base, and configuration.
+  - name: Blog & guides
+    url: https://devopsaitoolkit.com/blog
+    about: Tutorials, deep dives, and DevOps troubleshooting walkthroughs.
+  - name: Report a security vulnerability
+    url: https://github.com/devopsaitoolkit/devops-ai-toolkit/security/advisories/new
+    about: Please disclose security issues privately, not via public issues.

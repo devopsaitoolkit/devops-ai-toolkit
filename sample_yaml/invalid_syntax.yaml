@@ -1,0 +1,15 @@
+# Intentionally broken: the `ports` list item is under-indented so the YAML
+# parser raises a real indentation/mapping error. Use to demo validation errors.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: default
+data:
+  app.properties: |
+    server.port=8080
+    log.level=info
+  ports:
+   - name: http
+  - name: metrics
+    value: 9090

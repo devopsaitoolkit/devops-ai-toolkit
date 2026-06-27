@@ -1,0 +1,12 @@
+$ kubectl get events -n payments --sort-by=.lastTimestamp
+
+LAST SEEN   TYPE      REASON              OBJECT                                 MESSAGE
+5m          Normal    Scheduled           pod/payments-api-7c9d5f8b6c-q4m2x      Successfully assigned payments/payments-api-7c9d5f8b6c-q4m2x to worker-02
+5m          Normal    Pulling             pod/checkout-worker-5f7b9c44d8-pl7zn   Pulling image "registry.example.com/checkout-worker:v2.8.1"
+4m          Warning   Failed              pod/checkout-worker-5f7b9c44d8-pl7zn   Failed to pull image "registry.example.com/checkout-worker:v2.8.1": manifest unknown
+4m          Warning   Failed              pod/checkout-worker-5f7b9c44d8-pl7zn   Error: ErrImagePull
+4m          Warning   Failed              pod/checkout-worker-5f7b9c44d8-pl7zn   Error: ImagePullBackOff
+3m          Warning   Unhealthy           pod/payments-api-7c9d5f8b6c-q4m2x      Liveness probe failed: Get "http://10.244.2.41:8080/healthz": dial tcp 10.244.2.41:8080: connect: connection refused
+2m          Warning   BackOff             pod/payments-api-7c9d5f8b6c-q4m2x      Back-off restarting failed container payments-api
+1m          Warning   OOMKilling          node/worker-02                         Memory cgroup out of memory: Killed process cache-worker (exit code 137)
+30s         Warning   FailedMount         pod/reporting-7d4c9b8f6-mn3kp          MountVolume.SetUp failed for volume "report-config": configmap "report-config" not found

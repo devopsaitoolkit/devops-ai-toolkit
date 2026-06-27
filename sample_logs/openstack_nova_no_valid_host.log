@@ -1,0 +1,7 @@
+2026-06-24 13:40:12.339 31204 INFO nova.scheduler.manager [req-6b1c2f3a-9d8e-4c2b-8a17-2f0e5d7c9b41 admin demo] Starting to schedule for instances: ['9f3c1d2e-7a6b-4c5d-8e9f-0a1b2c3d4e5f']
+2026-06-24 13:40:12.812 31204 WARNING nova.scheduler.filters.compute_capabilities_filter [req-6b1c2f3a-9d8e-4c2b-8a17-2f0e5d7c9b41 admin demo] (compute-03, compute-03) ram: 4096MB disk: 51200MB vcpus: 2 fails flavor requirements: ram 16384MB
+2026-06-24 13:40:12.998 31204 INFO nova.filters [req-6b1c2f3a-9d8e-4c2b-8a17-2f0e5d7c9b41 admin demo] Filtering removed all hosts for the request with instance ID '9f3c1d2e-7a6b-4c5d-8e9f-0a1b2c3d4e5f'. Filter results: ['RamFilter: (start: 3, end: 0)', 'ComputeFilter: (start: 3, end: 3)']
+2026-06-24 13:40:13.114 31204 WARNING nova.scheduler.manager [req-6b1c2f3a-9d8e-4c2b-8a17-2f0e5d7c9b41 admin demo] Got no allocation candidates from the Placement API. This could be due to insufficient resources or a temporary occurrence as compute nodes start up.
+2026-06-24 13:40:13.220 31204 ERROR nova.conductor.manager [req-6b1c2f3a-9d8e-4c2b-8a17-2f0e5d7c9b41 admin demo] Failed to schedule instances: nova.exception_Remote.NoValidHost_Remote: No valid host was found. There are not enough hosts available.
+2026-06-24 13:40:13.221 31204 ERROR nova.conductor.manager NoValidHost: No valid host was found. There are not enough hosts available.
+2026-06-24 13:40:13.455 31204 WARNING nova.scheduler.utils [req-6b1c2f3a-9d8e-4c2b-8a17-2f0e5d7c9b41 admin demo] Setting instance to ERROR state.

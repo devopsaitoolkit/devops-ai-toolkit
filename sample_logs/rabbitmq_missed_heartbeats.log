@@ -1,0 +1,8 @@
+2026-06-24 15:01:44.213 [info] <0.28931.7> accepting AMQP connection <0.28931.7> (10.0.3.41:54122 -> 10.0.3.10:5672)
+2026-06-24 15:01:44.301 [info] <0.28931.7> connection <0.28931.7> (10.0.3.41:54122 -> 10.0.3.10:5672): user 'openstack' authenticated and granted access to vhost '/'
+2026-06-24 15:02:46.998 [error] <0.28931.7> closing AMQP connection <0.28931.7> (10.0.3.41:54122 -> 10.0.3.10:5672):
+missed heartbeats from client, timeout: 60s
+2026-06-24 15:02:47.004 [warning] <0.28931.7> Too many heartbeats missed from client 10.0.3.41
+2026-06-24 15:02:47.331 [error] <0.29044.7> nova-compute.compute-01: AMQP server on 10.0.3.10:5672 closed the connection. Check login credentials: Socket closed
+2026-06-24 15:02:48.110 [warning] <0.29044.7> oslo.messaging reconnecting to AMQP server on 10.0.3.10:5672
+2026-06-24 15:02:50.557 [info] <0.29101.7> accepting AMQP connection <0.29101.7> (10.0.3.41:54140 -> 10.0.3.10:5672)

@@ -1,0 +1,22 @@
+# Intentionally bad: :latest tag, no resource requests/limits, no probes,
+# runs as root. Use with `devops-ai validate sample_yaml/deployment_bad_practices.yaml`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: default
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: nginx:latest
+          ports:
+            - containerPort: 80

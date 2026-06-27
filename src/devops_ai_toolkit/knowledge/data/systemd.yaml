@@ -1,0 +1,350 @@
+- id: systemd.failed_to_start_unit
+  technology: systemd
+  title: "Failed to start <unit>"
+  summary: >-
+    systemd reports a unit failed to start. The unit entered a failed state and
+    its ExecStart never reached a running condition.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Failed to start "
+      - "Job for .* failed because"
+      - "entered failed state"
+      - "Failed with result"
+    weight: 0.7
+  root_causes:
+    - title: "ExecStart command failed or is misconfigured"
+      description: >-
+        The binary path is wrong, an argument is invalid, or the program exits
+        non-zero immediately, so the unit start job fails.
+      confidence: 0.6
+      category: configuration
+    - title: "Missing dependency, environment, or file"
+      description: >-
+        A required mount, network, env file, or working directory is absent, so
+        ExecStart cannot run successfully.
+      confidence: 0.45
+      category: configuration
+    - title: "Permission or sandboxing prevents start"
+      description: >-
+        The unit's User/Group lacks access, or hardening directives (e.g.
+        ProtectSystem, ReadOnlyPaths) block a needed action.
+      confidence: 0.4
+      category: authentication
+  diagnostic_commands:
+    - command: "systemctl status <unit> --no-pager -l"
+      explanation: "Shows the unit's active/failed state, last exit code, and recent log lines."
+      expected_output: "Active: failed (Result: exit-code) with the failing ExecStart line."
+      platform: "affected host"
+    - command: "journalctl -u <unit> -b --no-pager"
+      explanation: "Prints this boot's full log for the unit, including the underlying error."
+      expected_output: "The program's stderr / startup error message."
+    - command: "systemd-analyze verify <unit>"
+      explanation: "Statically checks the unit file for syntax and directive errors."
+      expected_output: "No output when valid; otherwise specific unit-file warnings."
+  suggested_fixes:
+    - title: "Correct ExecStart and reload"
+      description: >-
+        Fix the command path/arguments revealed by the logs, run the binary
+        manually as the unit's user to confirm, then reload and restart.
+      snippet: |
+        systemctl daemon-reload
+        systemctl restart <unit>
+    - title: "Provide the missing dependency or relax hardening"
+      description: "Add the required After=/Requires=, env file, or adjust sandboxing directives the logs implicate."
+  references:
+    - title: "Why a systemd service fails to start"
+      url: "https://devopsaitoolkit.com/blog/systemd-failed-to-start-unit"
+      source: "devopsaitoolkit"
+    - title: "systemd.service unit configuration"
+      url: "https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html"
+      source: "official docs"
+  best_practices:
+    - "Validate unit files with systemd-analyze verify before deploying."
+    - "Test ExecStart manually as the configured User before enabling."
+  prevention:
+    - "Pin absolute paths in ExecStart and declare all dependencies explicitly."
+  tags: [units, service, startup]
+
+- id: systemd.unit_not_found
+  technology: systemd
+  title: "Unit <name> not found"
+  summary: >-
+    systemd cannot find the requested unit, so the command or a dependency
+    reference fails with 'Unit ... not found'.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Unit .* not found"
+      - "Failed to .*: Unit .* not found"
+      - "not found\\.$"
+      - "No such file or directory.*\\.service"
+    weight: 0.74
+  root_causes:
+    - title: "Unit file is missing or misnamed"
+      description: >-
+        The .service/.socket file does not exist in any unit search path, or its
+        name/extension is misspelled in the command or a Requires=/After=.
+      confidence: 0.6
+      category: configuration
+    - title: "Unit added but daemon not reloaded"
+      description: >-
+        A new unit file was dropped in but systemctl daemon-reload was not run,
+        so systemd has not picked it up.
+      confidence: 0.5
+      category: configuration
+    - title: "Unit installed in a path systemd does not scan"
+      description: >-
+        The file lives outside /etc/systemd/system, /run/systemd/system, or the
+        lib unit dirs, so it is invisible.
+      confidence: 0.35
+      category: configuration
+  diagnostic_commands:
+    - command: "systemctl list-unit-files | grep <name>"
+      explanation: "Checks whether systemd knows about the unit at all."
+      expected_output: "A matching unit-file line; no match confirms it is not registered."
+      platform: "affected host"
+    - command: "systemctl cat <unit>"
+      explanation: "Prints the resolved unit file and its drop-ins, or errors if absent."
+      expected_output: "The full unit contents, or 'No files found' when missing."
+    - command: "systemd-analyze unit-paths"
+      explanation: "Lists every directory systemd searches for unit files."
+      expected_output: "The unit search paths; confirm your file is in one of them."
+  suggested_fixes:
+    - title: "Place the unit in a search path and reload"
+      description: >-
+        Install the file under /etc/systemd/system with the correct name, then
+        reload the daemon so systemd registers it.
+      snippet: |
+        cp myapp.service /etc/systemd/system/
+        systemctl daemon-reload
+    - title: "Correct the referenced unit name"
+      description: "Fix the typo/extension in the command or in Requires=/After= references."
+  references:
+    - title: "Resolving systemd 'Unit not found' errors"
+      url: "https://devopsaitoolkit.com/blog/systemd-unit-not-found"
+      source: "devopsaitoolkit"
+    - title: "systemd unit file load path"
+      url: "https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html"
+      source: "official docs"
+  best_practices:
+    - "Always run daemon-reload after adding or editing unit files."
+    - "Reference units by their exact, fully-qualified name."
+  prevention:
+    - "Automate unit install + daemon-reload in your provisioning."
+  tags: [units, not-found, configuration]
+
+- id: systemd.service_exited_nonzero
+  technology: systemd
+  title: "Service exited with non-zero status (code=exited)"
+  summary: >-
+    The main process of a service exited with a non-zero code; systemd marks the
+    unit failed with Result: exit-code.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "code=exited, status=[1-9]"
+      - "Main process exited, code=exited"
+      - "Failed with result 'exit-code'"
+      - "status=\\d+/[A-Z]+"
+    weight: 0.75
+  root_causes:
+    - title: "Application returned an error on startup or runtime"
+      description: >-
+        The program itself exited non-zero due to a config error, failed
+        dependency, bad credentials, or an unhandled runtime fault.
+      confidence: 0.6
+      category: application
+    - title: "Wrong Type= for the process model"
+      description: >-
+        A forking daemon set as Type=simple (or vice versa) makes systemd
+        misread the exit, reporting failure.
+      confidence: 0.4
+      category: configuration
+    - title: "Missing environment or permissions"
+      description: >-
+        A required env var/secret is absent or the User lacks access, so the
+        process aborts with a non-zero code.
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "systemctl status <unit> --no-pager -l"
+      explanation: "Reveals the exit code and status systemd recorded for the main process."
+      expected_output: "Main process exited, code=exited, status=<n>/<SIGNAL or reason>."
+      platform: "affected host"
+    - command: "journalctl -u <unit> -n 100 --no-pager"
+      explanation: "Shows the last 100 log lines from the unit, including the error before exit."
+      expected_output: "The application's fatal error or stack trace preceding the exit."
+    - command: "systemctl show <unit> -p Type -p ExecStart -p ExecMainStatus"
+      explanation: "Displays the configured Type, command, and last main exit status."
+      expected_output: "Type, ExecStart, and ExecMainStatus values to cross-check the model."
+  suggested_fixes:
+    - title: "Fix the underlying application error"
+      description: >-
+        Use the journal to find why the process exited, correct the
+        config/dependency, and confirm by running the command manually.
+    - title: "Match Type= to the process behavior"
+      description: "Set Type=simple/exec/forking/notify to how the binary actually runs."
+      snippet: |
+        [Service]
+        Type=simple
+        ExecStart=/usr/bin/myapp --foreground
+  references:
+    - title: "Diagnosing systemd services that exit non-zero"
+      url: "https://devopsaitoolkit.com/blog/systemd-service-exited-nonzero"
+      source: "devopsaitoolkit"
+    - title: "systemd.service: Type= and exit handling"
+      url: "https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html#Type="
+      source: "official docs"
+  best_practices:
+    - "Make services run in the foreground and log to stdout/journal."
+    - "Choose Type= to match the binary's foreground/forking behavior."
+  prevention:
+    - "Validate required env/secrets before the service starts."
+  tags: [service, exit-code, failure]
+
+- id: systemd.dependency_failed
+  technology: systemd
+  title: "Dependency failed for <unit>"
+  summary: >-
+    systemd skipped or failed a unit because a unit it depends on failed, so the
+    job result is 'dependency'.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Dependency failed for "
+      - "Job .* failed with result 'dependency'"
+      - "Requested dependency .* failed"
+    weight: 0.74
+  root_causes:
+    - title: "A required upstream unit failed"
+      description: >-
+        A unit listed in Requires=/Requisite= failed to start, so systemd
+        refuses to start the dependent unit.
+      confidence: 0.65
+      category: configuration
+    - title: "Mount, network, or device target not reached"
+      description: >-
+        The unit depends on a mount/target (e.g. network-online.target) that
+        never became active.
+      confidence: 0.45
+      category: configuration
+    - title: "Ordering vs requirement confusion"
+      description: >-
+        After= (ordering only) is mistaken for a requirement, or a hard Requires=
+        is used where Wants= would be more resilient.
+      confidence: 0.35
+      category: configuration
+  diagnostic_commands:
+    - command: "systemctl list-dependencies <unit>"
+      explanation: "Shows the dependency tree so you can see which required unit is failing."
+      expected_output: "A tree where the failed dependency is marked with a red/failed state."
+      platform: "affected host"
+    - command: "systemctl --failed --no-pager"
+      explanation: "Lists all currently failed units, exposing the failing upstream dependency."
+      expected_output: "The dependency unit listed in the failed table."
+    - command: "journalctl -u <dependency-unit> -b --no-pager"
+      explanation: "Shows why the upstream dependency itself failed."
+      expected_output: "The root error from the dependency unit's start attempt."
+  suggested_fixes:
+    - title: "Fix the failing upstream unit"
+      description: >-
+        Repair the dependency the tree highlights; once it starts cleanly, the
+        dependent unit can start. Restart both after the fix.
+    - title: "Adjust dependency strength/ordering"
+      description: "Use Wants= for soft dependencies and ensure After= orders against the right target."
+      snippet: |
+        [Unit]
+        Wants=network-online.target
+        After=network-online.target
+  references:
+    - title: "Untangling systemd dependency failures"
+      url: "https://devopsaitoolkit.com/blog/systemd-dependency-failed"
+      source: "devopsaitoolkit"
+    - title: "systemd.unit: requirement and ordering dependencies"
+      url: "https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html"
+      source: "official docs"
+  best_practices:
+    - "Prefer Wants= over Requires= unless failure must cascade."
+    - "Order against network-online.target only when truly needed."
+  prevention:
+    - "Test dependency chains by starting the leaf unit on a clean boot."
+  tags: [dependencies, ordering, targets]
+
+- id: systemd.start_limit_hit
+  technology: systemd
+  title: "start-limit-hit: unit not restarting"
+  summary: >-
+    systemd stopped restarting a unit because it failed too many times within the
+    configured interval, entering a failed start-limit state.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "start-limit-hit"
+      - "start request repeated too quickly"
+      - "Failed with result 'start-limit-hit'"
+      - "StartLimitIntervalSec"
+    weight: 0.78
+  root_causes:
+    - title: "Underlying failure causes a rapid crash loop"
+      description: >-
+        The service keeps exiting quickly, and once it crosses StartLimitBurst
+        within StartLimitIntervalSec, systemd refuses further restarts.
+      confidence: 0.65
+      category: application
+    - title: "Restart settings too aggressive for the workload"
+      description: >-
+        A short RestartSec with a low burst limit trips the rate limiter before
+        a slow-recovering dependency is ready.
+      confidence: 0.45
+      category: configuration
+    - title: "Persistent config error that never resolves"
+      description: >-
+        A bad config or missing resource means every start attempt fails
+        identically until the limit is reached.
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "systemctl status <unit> --no-pager -l"
+      explanation: "Confirms the start-limit-hit result and shows the recent failure pattern."
+      expected_output: "Active: failed (Result: start-limit-hit) with repeated start entries."
+      platform: "affected host"
+    - command: "journalctl -u <unit> --since '-15min' --no-pager"
+      explanation: "Reveals the repeating root error behind the crash loop."
+      expected_output: "The same fatal error logged on each restart attempt."
+    - command: "systemctl show <unit> -p StartLimitBurst -p StartLimitIntervalSec -p RestartSec"
+      explanation: "Displays the rate-limit and restart settings in effect."
+      expected_output: "The configured burst, interval, and RestartSec values."
+  suggested_fixes:
+    - title: "Fix the crash cause, then reset the limit"
+      description: >-
+        Resolve the repeating failure from the journal, run systemctl
+        reset-failed, and start the unit again.
+      snippet: |
+        systemctl reset-failed <unit>
+        systemctl start <unit>
+    - title: "Tune restart rate limiting"
+      description: "Adjust StartLimitIntervalSec/StartLimitBurst and RestartSec to allow recovery without masking real failures."
+      snippet: |
+        [Unit]
+        StartLimitIntervalSec=300
+        StartLimitBurst=5
+        [Service]
+        Restart=on-failure
+        RestartSec=10
+  references:
+    - title: "Fixing systemd start-limit-hit crash loops"
+      url: "https://devopsaitoolkit.com/blog/systemd-start-limit-hit"
+      source: "devopsaitoolkit"
+    - title: "systemd.unit: StartLimitIntervalSec / StartLimitBurst"
+      url: "https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html#StartLimitIntervalSec="
+      source: "official docs"
+  warnings:
+    - message: "Raising the restart limit without fixing the crash just hides a broken service."
+      severity: medium
+  best_practices:
+    - "Always reset-failed only after fixing the underlying crash."
+    - "Set RestartSec high enough to avoid tight crash loops."
+  prevention:
+    - "Add health checks and validate config before enabling auto-restart."
+  tags: [restart, rate-limit, crash-loop]

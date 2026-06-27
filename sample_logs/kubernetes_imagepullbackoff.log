@@ -1,0 +1,7 @@
+2026-06-24T11:02:10.004Z  kubelet  pod/checkout-worker-5f7b9c44d8-pl7zn  Pulling image "registry.example.com/checkout-worker:v2.8.1"
+2026-06-24T11:02:14.661Z  kubelet  pod/checkout-worker-5f7b9c44d8-pl7zn  Failed to pull image "registry.example.com/checkout-worker:v2.8.1": rpc error: code = Unknown desc = failed to pull and unpack image: failed to resolve reference: registry.example.com/checkout-worker:v2.8.1: manifest unknown
+2026-06-24T11:02:14.662Z  kubelet  pod/checkout-worker-5f7b9c44d8-pl7zn  Error: ErrImagePull
+2026-06-24T11:02:30.118Z  kubelet  pod/checkout-worker-5f7b9c44d8-pl7zn  Back-off pulling image "registry.example.com/checkout-worker:v2.8.1"
+2026-06-24T11:02:30.119Z  kubelet  pod/checkout-worker-5f7b9c44d8-pl7zn  Error: ImagePullBackOff
+2026-06-24T11:03:05.447Z  kubelet  pod/checkout-worker-5f7b9c44d8-pl7zn  Failed to pull image "registry.example.com/checkout-worker:v2.8.1": pull access denied, repository does not exist or may require authorization
+2026-06-24T11:03:05.448Z  kube-controller  pod/checkout-worker-5f7b9c44d8-pl7zn  status: ImagePullBackOff (waiting)

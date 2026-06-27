@@ -1,0 +1,415 @@
+- id: terraform.state_lock
+  technology: terraform
+  title: "Error acquiring the state lock"
+  summary: >-
+    Terraform cannot acquire the lock on the remote state because another
+    operation holds it, or a previous run crashed and left a stale lock behind.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Error acquiring the state lock"
+      - "Lock Info:"
+      - "ConditionalCheckFailedException"
+      - "state blob is already locked"
+    weight: 0.85
+  root_causes:
+    - title: "Concurrent run holds the lock"
+      description: >-
+        Another apply/plan (a teammate or a CI job) is in progress and legitimately
+        holds the lock.
+      confidence: 0.6
+      category: configuration
+    - title: "Stale lock from a crashed run"
+      description: >-
+        A previous run was killed (Ctrl-C, runner timeout, network drop) before it
+        could release the lock.
+      confidence: 0.55
+      category: state
+    - title: "Locking backend misconfigured"
+      description: >-
+        The DynamoDB table / blob lease used for locking is missing permissions or
+        was deleted, so locks cannot be managed cleanly.
+      confidence: 0.35
+      category: configuration
+  diagnostic_commands:
+    - command: "terraform plan -lock=false"
+      explanation: "Runs a read-only plan without taking the lock to confirm config is otherwise valid."
+      expected_output: "A normal plan, proving the lock is the only blocker."
+    - command: "terraform show"
+      explanation: "Reads current state to inspect what the last run left behind."
+      expected_output: "The currently recorded resources, or empty if state is fresh."
+    - command: "aws dynamodb get-item --table-name <lock-table> --key '{\"LockID\":{\"S\":\"<path>\"}}'"
+      explanation: "Inspects the DynamoDB lock record (who/when) for an S3 backend."
+      expected_output: "The lock item with Info, Who, and Created fields — or none if free."
+      platform: "aws s3 backend"
+  suggested_fixes:
+    - title: "Wait for the other run, then retry"
+      description: >-
+        Confirm no legitimate apply is running (check CI), then simply re-run once it
+        completes.
+    - title: "Force-unlock a confirmed stale lock"
+      description: >-
+        After verifying no operation is active, release the lock using the ID printed
+        in the error. Only do this when certain it is stale.
+      snippet: |
+        terraform force-unlock <LOCK_ID>
+  references:
+    - title: "Terraform state lock errors explained"
+      url: "https://devopsaitoolkit.com/blog/terraform-error-acquiring-state-lock"
+      source: "devopsaitoolkit"
+    - title: "Terraform force-unlock command"
+      url: "https://developer.hashicorp.com/terraform/cli/commands/force-unlock"
+      source: "official"
+  warnings:
+    - message: "force-unlock while another apply is running can corrupt state. Verify it is truly stale first."
+      severity: high
+  best_practices:
+    - "Serialize Terraform runs per state in CI to avoid concurrent locks."
+    - "Use a locking backend (S3+DynamoDB, azurerm, gcs) in any shared setup."
+  prevention:
+    - "Run Terraform in CI with a per-workspace concurrency guard."
+  tags: [state, lock, backend]
+
+- id: terraform.unsupported_argument
+  technology: terraform
+  title: "Unsupported argument"
+  summary: >-
+    A configuration block sets an argument the resource/module schema does not
+    define — a typo, a removed/renamed field, or a provider version mismatch.
+  applies_to: [terraform, error_string, command_output]
+  match:
+    any_of:
+      - "Unsupported argument"
+      - "An argument named .* is not expected here"
+    weight: 0.82
+  root_causes:
+    - title: "Misspelled or wrong argument name"
+      description: >-
+        The argument name does not match the schema (typo, or it belongs to a
+        different resource type).
+      confidence: 0.6
+      category: configuration
+    - title: "Provider version changed the schema"
+      description: >-
+        A provider upgrade/downgrade renamed or removed the argument, so the pinned
+        version no longer accepts it.
+      confidence: 0.5
+      category: dependencies
+    - title: "Argument belongs in a nested block"
+      description: >-
+        The field is valid but must live inside a nested block, not at the top level
+        of the resource.
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "terraform validate"
+      explanation: "Statically checks the config and reports the exact file/line and argument."
+      expected_output: "Error: Unsupported argument with the offending name and location."
+    - command: "terraform providers"
+      explanation: "Lists the providers and versions actually selected for this config."
+      expected_output: "The resolved provider versions to compare against the docs."
+  suggested_fixes:
+    - title: "Correct the argument against the provider docs"
+      description: >-
+        Look up the resource for the pinned provider version and fix the name or move
+        it into the correct nested block.
+    - title: "Align the provider version with the config"
+      description: >-
+        Pin the provider version whose schema matches the arguments you use.
+      snippet: |
+        terraform {
+          required_providers {
+            aws = { source = "hashicorp/aws", version = "~> 5.40" }
+          }
+        }
+  references:
+    - title: "Terraform Unsupported argument error"
+      url: "https://devopsaitoolkit.com/blog/terraform-unsupported-argument"
+      source: "devopsaitoolkit"
+    - title: "Terraform validate command"
+      url: "https://developer.hashicorp.com/terraform/cli/commands/validate"
+      source: "official"
+  best_practices:
+    - "Pin provider versions with required_providers and a committed lock file."
+    - "Run terraform validate in CI on every change."
+  prevention:
+    - "Read provider upgrade guides before bumping major versions."
+  tags: [schema, providers, validation]
+
+- id: terraform.required_variable_unset
+  technology: terraform
+  title: "No value for required variable"
+  summary: >-
+    Terraform aborts because a declared variable with no default was not supplied
+    via tfvars, -var, or an environment variable.
+  applies_to: [terraform, error_string, command_output]
+  match:
+    any_of:
+      - "No value for required variable"
+      - "The root module input variable .* is not set"
+    weight: 0.82
+  root_causes:
+    - title: "Variable not passed in non-interactive run"
+      description: >-
+        A required variable lacks a default and CI runs with -input=false, so there
+        is nowhere to prompt for it.
+      confidence: 0.6
+      category: configuration
+    - title: "Missing or misnamed tfvars file"
+      description: >-
+        The expected .tfvars file was not auto-loaded (wrong name) or not passed with
+        -var-file.
+      confidence: 0.5
+      category: configuration
+    - title: "TF_VAR_ environment variable not set"
+      description: >-
+        The pipeline relies on a TF_VAR_<name> env var that is absent in this job.
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "terraform validate"
+      explanation: "Surfaces which required variables are declared without a default."
+      expected_output: "An error naming the unset required variable."
+    - command: "terraform plan -var-file=<file>.tfvars"
+      explanation: "Read-only plan to confirm the variable resolves once the file is supplied."
+      expected_output: "A normal plan, proving the variable was the only gap."
+  suggested_fixes:
+    - title: "Supply the variable explicitly"
+      description: >-
+        Pass the value via an auto-loaded tfvars file, -var-file, -var, or a TF_VAR_
+        environment variable.
+      snippet: |
+        terraform plan -var-file=prod.tfvars
+        # or: export TF_VAR_region=eu-west-1
+    - title: "Give safe non-secret variables a default"
+      description: >-
+        Add a sensible default to variables that are not environment-specific so runs
+        do not require manual input.
+      snippet: |
+        variable "region" {
+          type    = string
+          default = "us-east-1"
+        }
+  references:
+    - title: "Terraform required variable not set"
+      url: "https://devopsaitoolkit.com/blog/terraform-no-value-for-required-variable"
+      source: "devopsaitoolkit"
+    - title: "Terraform input variables"
+      url: "https://developer.hashicorp.com/terraform/language/values/variables"
+      source: "official"
+  best_practices:
+    - "Run with -input=false in CI to fail fast on missing variables."
+    - "Keep per-environment tfvars files in version control (minus secrets)."
+  prevention:
+    - "Validate that all required variables are wired in CI before apply."
+  tags: [variables, inputs, ci]
+
+- id: terraform.provider_config_error
+  technology: terraform
+  title: "Error configuring provider / authentication"
+  summary: >-
+    A provider fails to initialize because its credentials, region/endpoint, or
+    required config is missing or invalid.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Error configuring (the )?provider"
+      - "No valid credential sources found"
+      - "failed to get shared config profile"
+      - "Error: error configuring Terraform AWS Provider"
+    weight: 0.8
+  root_causes:
+    - title: "Missing or expired credentials"
+      description: >-
+        The provider cannot find valid credentials (no env vars, expired token, wrong
+        profile) for authentication.
+      confidence: 0.6
+      category: authentication
+    - title: "Region/endpoint not set"
+      description: >-
+        A required region or endpoint is absent, so the provider cannot pick an API
+        target.
+      confidence: 0.45
+      category: configuration
+    - title: "Wrong named profile or assume-role failure"
+      description: >-
+        The referenced profile does not exist, or an assume_role/STS step is denied.
+      confidence: 0.4
+      category: authentication
+  diagnostic_commands:
+    - command: "terraform providers"
+      explanation: "Confirms which providers are required and selected for the config."
+      expected_output: "The provider list and versions in use."
+    - command: "aws sts get-caller-identity"
+      explanation: "Verifies the active AWS credentials resolve to a valid identity (read-only)."
+      expected_output: "The Account, UserId, and Arn — or an auth error."
+      platform: "aws provider"
+    - command: "env | grep -E 'AWS_|TF_VAR_|ARM_|GOOGLE_'"
+      explanation: "Shows which provider-related environment variables are present in the job."
+      expected_output: "The credential/region env vars the provider expects."
+      platform: "linux"
+  suggested_fixes:
+    - title: "Provide valid credentials and region"
+      description: >-
+        Export working credentials and the region the provider needs, or reference a
+        valid profile.
+      snippet: |
+        export AWS_PROFILE=prod
+        export AWS_REGION=us-east-1
+    - title: "Set credentials in the provider block"
+      description: >-
+        Configure region/profile explicitly so the provider does not rely on ambient
+        defaults. Keep secrets out of code.
+      snippet: |
+        provider "aws" {
+          region  = var.region
+          profile = var.aws_profile
+        }
+  references:
+    - title: "Terraform error configuring provider"
+      url: "https://devopsaitoolkit.com/blog/terraform-error-configuring-provider"
+      source: "devopsaitoolkit"
+    - title: "AWS provider authentication"
+      url: "https://registry.terraform.io/providers/hashicorp/aws/latest/docs#authentication-and-configuration"
+      source: "official"
+  warnings:
+    - message: "Never hardcode access keys or secrets in provider blocks or tfvars committed to git."
+      severity: high
+  best_practices:
+    - "Use short-lived credentials (OIDC/STS) in CI rather than static keys."
+    - "Set region/profile via variables, not magic ambient state."
+  prevention:
+    - "Validate credentials early with a read-only identity check in the pipeline."
+  tags: [providers, credentials, auth]
+
+- id: terraform.dependency_cycle
+  technology: terraform
+  title: "Cycle / dependency cycle"
+  summary: >-
+    Terraform's resource graph contains a circular reference, so it cannot order
+    the operations and aborts before planning.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Error: Cycle:"
+      - "dependency cycle"
+      - "Cycle: .* ->"
+    weight: 0.82
+  root_causes:
+    - title: "Resources reference each other"
+      description: >-
+        Two or more resources depend on each other's attributes (A -> B -> A),
+        creating a loop the graph cannot resolve.
+      confidence: 0.6
+      category: configuration
+    - title: "Unnecessary explicit depends_on"
+      description: >-
+        Hand-written depends_on entries form a cycle that the implicit dependency
+        graph would not have.
+      confidence: 0.45
+      category: configuration
+    - title: "Self-referencing module outputs/inputs"
+      description: >-
+        A module's output feeds back into one of its own inputs, or two modules feed
+        each other circularly.
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "terraform graph"
+      explanation: "Emits the dependency graph (DOT) so the cycle's edges can be traced."
+      expected_output: "A DOT graph; follow the edges named in the Cycle error."
+    - command: "terraform validate"
+      explanation: "Confirms the cycle is detected statically and names the involved resources."
+      expected_output: "Error: Cycle listing the looping resource addresses."
+  suggested_fixes:
+    - title: "Break the loop by restructuring references"
+      description: >-
+        Remove the circular attribute reference — split a resource, use a data source,
+        or pass a known value instead of a computed one.
+    - title: "Remove redundant depends_on"
+      description: >-
+        Delete explicit depends_on that duplicates an implicit dependency and creates
+        the cycle.
+  references:
+    - title: "Terraform dependency cycle errors"
+      url: "https://devopsaitoolkit.com/blog/terraform-dependency-cycle"
+      source: "devopsaitoolkit"
+    - title: "Terraform resource dependencies"
+      url: "https://developer.hashicorp.com/terraform/language/resources/behavior#resource-dependencies"
+      source: "official"
+  best_practices:
+    - "Rely on implicit dependencies; add depends_on only when truly needed."
+    - "Keep module input/output flow one-directional."
+  prevention:
+    - "Review terraform graph when refactoring tightly-coupled resources."
+  tags: [graph, dependencies, modules]
+
+- id: terraform.backend_changed
+  technology: terraform
+  title: "Backend configuration changed"
+  summary: >-
+    The backend block changed since the last init, so Terraform refuses to run
+    until you re-initialize and decide how to handle existing state.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Backend configuration changed"
+      - "Initialization required. Please see the error message above"
+      - "Error: Backend initialization required"
+    weight: 0.82
+  root_causes:
+    - title: "Backend block edited without re-init"
+      description: >-
+        Bucket, key, region, or backend type changed in code but the working directory
+        still references the old initialization.
+      confidence: 0.6
+      category: configuration
+    - title: "Switched backends (local <-> remote)"
+      description: >-
+        Migrating between local and remote state requires an explicit re-init and a
+        migration decision.
+      confidence: 0.45
+      category: state
+    - title: "Stale or wiped .terraform directory"
+      description: >-
+        The .terraform metadata was deleted or built in a different context, so it no
+        longer matches the configured backend.
+      confidence: 0.4
+      category: state
+  diagnostic_commands:
+    - command: "terraform show"
+      explanation: "Reads currently known state to confirm what data exists before migrating."
+      expected_output: "The resources tracked in the present backend (or empty)."
+    - command: "cat .terraform/terraform.tfstate"
+      explanation: "Inspects the recorded backend metadata to compare with the new config."
+      expected_output: "The previously-initialized backend type and settings."
+      platform: "local working dir"
+  suggested_fixes:
+    - title: "Re-initialize the backend"
+      description: >-
+        Run init again so Terraform reconciles the new backend config with existing
+        metadata.
+      snippet: |
+        terraform init -reconfigure
+    - title: "Migrate existing state to the new backend"
+      description: >-
+        When moving state between backends, init with migration so resources are not
+        lost.
+      snippet: |
+        terraform init -migrate-state
+  references:
+    - title: "Terraform backend configuration changed"
+      url: "https://devopsaitoolkit.com/blog/terraform-backend-configuration-changed"
+      source: "devopsaitoolkit"
+    - title: "Terraform backend initialization"
+      url: "https://developer.hashicorp.com/terraform/language/backend#initialization"
+      source: "official"
+  warnings:
+    - message: "Choosing the wrong migration option can copy or discard state. Back up state before re-init."
+      severity: high
+  best_practices:
+    - "Back up remote state before changing backend configuration."
+    - "Use partial backend config + -reconfigure for environment differences."
+  prevention:
+    - "Review backend changes in PRs and run init in a throwaway dir first."
+  tags: [backend, state, init]

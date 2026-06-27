@@ -1,0 +1,5 @@
+ts=2026-06-24T18:05:11.402Z caller=scrape.go:1351 level=debug component="scrape manager" scrape_pool=node target=http://10.0.4.22:9100/metrics msg="Scrape failed" err="Get \"http://10.0.4.22:9100/metrics\": dial tcp 10.0.4.22:9100: connect: connection refused"
+ts=2026-06-24T18:05:26.402Z caller=scrape.go:1351 level=debug component="scrape manager" scrape_pool=node target=http://10.0.4.22:9100/metrics msg="Scrape failed" err="Get \"http://10.0.4.22:9100/metrics\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"
+ts=2026-06-24T18:05:41.402Z caller=scrape.go:1351 level=warn component="scrape manager" scrape_pool=api target=http://10.0.4.30:8080/metrics msg="Scrape failed" err="server returned HTTP status 503 Service Unavailable"
+ts=2026-06-24T18:05:56.402Z caller=manager.go:223 level=info component="rule manager" msg="Evaluating alert" alert=InstanceDown expr="up == 0" value=0
+ts=2026-06-24T18:06:00.000Z caller=alertmanager level=warn alertname=InstanceDown instance=10.0.4.22:9100 job=node msg="target DOWN: connection refused"

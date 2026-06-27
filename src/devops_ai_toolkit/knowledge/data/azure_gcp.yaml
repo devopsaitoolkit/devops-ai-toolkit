@@ -1,0 +1,393 @@
+- id: azure.aadsts_auth_failure
+  technology: azure
+  title: "AADSTS authentication failure"
+  summary: >-
+    Microsoft Entra ID (Azure AD) rejected an authentication or token request;
+    the AADSTS error code identifies the exact cause (bad secret, wrong tenant,
+    consent, conditional access).
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "AADSTS\\d{4,6}"
+      - "AADSTS7000215"
+      - "AADSTS70011"
+      - "AADSTS50076"
+    weight: 0.82
+  root_causes:
+    - title: "Invalid or expired client secret/credential"
+      description: >-
+        AADSTS7000215 indicates the app's client secret is wrong or expired, so
+        the token request fails.
+      confidence: 0.6
+      category: authentication
+    - title: "Wrong tenant, client id, or authority"
+      description: >-
+        The request targets the wrong tenant/authority or uses a client id that
+        does not match the registered app.
+      confidence: 0.45
+      category: configuration
+    - title: "Missing consent or invalid scope"
+      description: >-
+        AADSTS70011 and related codes flag an unsupported scope or
+        un-consented permission for the app.
+      confidence: 0.45
+      category: authorization
+    - title: "Conditional access / MFA required"
+      description: "A conditional access policy (e.g. AADSTS50076) requires MFA the flow did not satisfy."
+      confidence: 0.35
+      category: governance
+  diagnostic_commands:
+    - command: "az account show"
+      explanation: "Shows the currently signed-in tenant and subscription to confirm the right context."
+      expected_output: "The active tenantId, subscription, and user/service principal."
+    - command: "az ad app credential list --id <app-id>"
+      explanation: "Lists the app registration's secrets/certs and their expiry."
+      expected_output: "Credential entries with endDateTime; an expired secret stands out."
+  suggested_fixes:
+    - title: "Rotate the client secret and update the app"
+      description: >-
+        Create a new client secret (or certificate) on the app registration and
+        update the application's configuration/secret store.
+      snippet: |
+        az ad app credential reset --id <app-id> --append
+    - title: "Correct tenant/authority/scope"
+      description: "Verify the authority URL, tenant id, client id, and requested scopes match the app registration and grant admin consent if needed."
+  references:
+    - title: "Decoding AADSTS authentication errors"
+      url: "https://devopsaitoolkit.com/blog/azure-error-aadsts-authentication"
+      source: "devopsaitoolkit"
+    - title: "Microsoft Entra authentication and authorization error codes"
+      url: "https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes"
+      source: "official docs"
+  warnings:
+    - message: "Store rotated client secrets in Key Vault, not in code or pipeline variables in plain text."
+      severity: medium
+  best_practices:
+    - "Prefer workload identity/managed identities or certificates over client secrets."
+    - "Track secret expiry and rotate before it lapses."
+  prevention:
+    - "Alert on app credential expiry dates ahead of time."
+  tags: [entra, authentication, identity]
+
+- id: azure.quota_exceeded
+  technology: azure
+  title: "QuotaExceeded / operation could not be completed"
+  summary: >-
+    An Azure deployment failed because a regional quota (vCPUs per family,
+    public IPs, etc.) was exceeded for the subscription.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "QuotaExceeded"
+      - "OperationNotAllowed.*quota"
+      - "exceeding approved .*Quota"
+      - "Total Regional Cores"
+    weight: 0.8
+  root_causes:
+    - title: "Regional vCPU quota for the SKU family reached"
+      description: >-
+        Compute quotas are per region per VM family; the deployment requests
+        more cores than remain.
+      confidence: 0.6
+      category: quota
+    - title: "Resource-type quota exhausted"
+      description: >-
+        A non-compute limit (public IPs, disks, network resources) blocks the
+        deployment.
+      confidence: 0.45
+      category: quota
+    - title: "Stale resources consuming the quota"
+      description: "Deallocated-but-not-deleted VMs or orphaned resources still count toward limits."
+      confidence: 0.4
+      category: operations
+  diagnostic_commands:
+    - command: "az vm list-usage --location <region> -o table"
+      explanation: "Shows current vs. limit for each compute quota in the region."
+      expected_output: "Rows where CurrentValue is at or near Limit."
+    - command: "az network list-usages --location <region> -o table"
+      explanation: "Shows networking quotas (public IPs, NICs) versus their limits."
+      expected_output: "Network resource usage approaching limits."
+  suggested_fixes:
+    - title: "Request a quota increase"
+      description: >-
+        Raise the specific regional quota via the portal Usage + quotas page or
+        the CLI/support request for that family.
+      snippet: |
+        az quota update --resource-name standardDSv3Family \
+          --scope "/subscriptions/<sub>/providers/Microsoft.Compute/locations/<region>" \
+          --limit-object value=100 limit-object-type=LimitValue
+    - title: "Use a different region/SKU or reclaim capacity"
+      description: "Deploy to a region/family with headroom, choose a smaller SKU, or delete stale resources."
+  references:
+    - title: "Fixing Azure QuotaExceeded deployment errors"
+      url: "https://devopsaitoolkit.com/blog/azure-error-quota-exceeded"
+      source: "devopsaitoolkit"
+    - title: "Resolve errors for resource quotas"
+      url: "https://learn.microsoft.com/en-us/azure/azure-resource-manager/troubleshooting/error-resource-quota"
+      source: "official docs"
+  best_practices:
+    - "Track per-region/family quota headroom for autoscaling workloads."
+    - "Delete deallocated VMs and orphaned resources promptly."
+  prevention:
+    - "Request increases ahead of scaling events."
+  tags: [quota, compute, capacity]
+
+- id: azure.resource_not_found
+  technology: azure
+  title: "ResourceNotFound"
+  summary: >-
+    An Azure operation referenced a resource ARM cannot find, due to a wrong
+    name/resource group, deletion, or the wrong subscription context.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "ResourceNotFound"
+      - "could not be found"
+      - "ResourceGroupNotFound"
+      - "was not found"
+    weight: 0.78
+  root_causes:
+    - title: "Wrong subscription or resource group"
+      description: >-
+        The CLI/template is scoped to a different subscription or resource group
+        than where the resource lives.
+      confidence: 0.55
+      category: configuration
+    - title: "Typo in resource name or type"
+      description: "A misspelled name or incorrect resource provider/type yields not found."
+      confidence: 0.45
+      category: configuration
+    - title: "Resource was deleted or never created"
+      description: "The referenced resource was removed or a dependency failed to create it."
+      confidence: 0.4
+      category: operations
+  diagnostic_commands:
+    - command: "az account show --query '{name:name, id:id}'"
+      explanation: "Confirms which subscription the CLI is currently operating against."
+      expected_output: "The intended subscription name and id."
+    - command: "az resource list --name <name> -o table"
+      explanation: "Searches for the resource by name across the subscription to locate it (or confirm absence)."
+      expected_output: "A matching resource with its group/type, or no rows."
+  suggested_fixes:
+    - title: "Set the correct subscription and scope"
+      description: >-
+        Select the right subscription and reference the correct resource group
+        and resource name.
+      snippet: |
+        az account set --subscription <sub-id>
+        az resource show -g <rg> -n <name> --resource-type <type>
+    - title: "Recreate or fix dependency ordering"
+      description: "If the resource is genuinely missing, create it or fix template dependsOn so dependencies exist first."
+  references:
+    - title: "Fixing Azure ResourceNotFound errors"
+      url: "https://devopsaitoolkit.com/blog/azure-error-resource-not-found"
+      source: "devopsaitoolkit"
+    - title: "Resolve ResourceNotFound errors"
+      url: "https://learn.microsoft.com/en-us/azure/azure-resource-manager/troubleshooting/error-not-found"
+      source: "official docs"
+  best_practices:
+    - "Pin the subscription explicitly in automation rather than relying on the default."
+    - "Use template dependsOn to order resource creation."
+  prevention:
+    - "Validate resource references and scope in CI before deploying."
+  tags: [arm, resources, configuration]
+
+- id: gcp.permission_denied_iam
+  technology: gcp
+  title: "Caller does not have permission (IAM)"
+  summary: >-
+    A Google Cloud API call was denied because the caller's IAM identity lacks
+    the required permission/role on the resource or project.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "does not have .* permission"
+      - "PERMISSION_DENIED"
+      - "Required '.*' permission"
+      - "caller does not have permission"
+    weight: 0.82
+  root_causes:
+    - title: "Identity missing the required role/permission"
+      description: >-
+        The user or service account is not granted a role containing the needed
+        permission on the project/resource.
+      confidence: 0.6
+      category: authorization
+    - title: "Wrong service account in use"
+      description: >-
+        The workload runs as a different service account (default vs. intended)
+        that lacks the grant.
+      confidence: 0.45
+      category: authentication
+    - title: "Org policy or VPC-SC restriction"
+      description: >-
+        An organization policy or VPC Service Controls perimeter blocks the
+        action regardless of IAM allows.
+      confidence: 0.4
+      category: governance
+  diagnostic_commands:
+    - command: "gcloud auth list"
+      explanation: "Shows the active account/service account the calls are made as."
+      expected_output: "The active credentialed account marked with an asterisk."
+    - command: "gcloud projects get-iam-policy <project> --flatten=bindings --filter=bindings.members:<member>"
+      explanation: "Shows which roles the member is bound to on the project."
+      expected_output: "The roles granted to the member, revealing gaps."
+  suggested_fixes:
+    - title: "Grant the least-privilege role"
+      description: >-
+        Bind a predefined or custom role containing the missing permission to
+        the identity on the project or resource.
+      snippet: |
+        gcloud projects add-iam-policy-binding <project> \
+          --member="serviceAccount:<sa>@<project>.iam.gserviceaccount.com" \
+          --role="roles/storage.objectViewer"
+    - title: "Use the intended service account"
+      description: "Attach or impersonate the correct service account for the workload, and check org policy/VPC-SC if denies persist."
+  references:
+    - title: "Fixing GCP PERMISSION_DENIED / IAM errors"
+      url: "https://devopsaitoolkit.com/blog/gcp-error-permission-denied"
+      source: "devopsaitoolkit"
+    - title: "Troubleshooting IAM"
+      url: "https://cloud.google.com/iam/docs/troubleshooting-access"
+      source: "official docs"
+  best_practices:
+    - "Grant least-privilege predefined roles scoped to the resource."
+    - "Use dedicated service accounts per workload, not the default SA."
+  prevention:
+    - "Use the IAM Policy Troubleshooter to validate access before rollout."
+  tags: [iam, authorization, security]
+
+- id: gcp.quota_exceeded
+  technology: gcp
+  title: "Quota exceeded (RESOURCE_EXHAUSTED)"
+  summary: >-
+    A Google Cloud request was rejected because a project/regional quota was
+    exhausted (API rate, CPUs, addresses, etc.).
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Quota exceeded"
+      - "RESOURCE_EXHAUSTED"
+      - "Quota '.*' exceeded"
+      - "rateLimitExceeded"
+    weight: 0.8
+  root_causes:
+    - title: "Regional resource quota reached"
+      description: >-
+        A regional quota (CPUs, in-use IP addresses, persistent disk) is
+        exhausted for the project.
+      confidence: 0.6
+      category: quota
+    - title: "API rate/usage quota exceeded"
+      description: >-
+        Per-minute API request quotas (e.g. read/write requests) are exceeded by
+        the call rate.
+      confidence: 0.45
+      category: quota
+    - title: "Stale resources consuming quota"
+      description: "Orphaned VMs, disks, or reserved IPs still count against limits."
+      confidence: 0.4
+      category: operations
+  diagnostic_commands:
+    - command: "gcloud compute regions describe <region> --format='table(quotas.metric, quotas.usage, quotas.limit)'"
+      explanation: "Shows per-metric usage versus limit for compute quotas in the region."
+      expected_output: "Metrics where usage equals or nears the limit."
+    - command: "gcloud compute project-info describe --format='table(quotas.metric, quotas.usage, quotas.limit)'"
+      explanation: "Shows project-wide (global) quota usage versus limits."
+      expected_output: "Global quotas near their limits."
+  suggested_fixes:
+    - title: "Request a quota increase"
+      description: >-
+        Raise the specific quota via the Quotas page or gcloud for the affected
+        metric/region.
+      snippet: |
+        gcloud alpha services quota update \
+          --service=compute.googleapis.com --consumer=projects/<project> \
+          --metric=compute.googleapis.com/cpus --value=200 --unit=1/{project}/{region}
+    - title: "Reclaim capacity or change region"
+      description: "Delete orphaned resources, choose a region with headroom, or add exponential backoff for API-rate quotas."
+  references:
+    - title: "Fixing GCP quota exceeded errors"
+      url: "https://devopsaitoolkit.com/blog/gcp-error-quota-exceeded"
+      source: "devopsaitoolkit"
+    - title: "Working with quotas"
+      url: "https://cloud.google.com/docs/quotas/view-manage"
+      source: "official docs"
+  warnings:
+    - message: "For API-rate quotas, add exponential backoff; retrying immediately keeps tripping the limit."
+      severity: medium
+  best_practices:
+    - "Monitor quota usage metrics and request increases proactively."
+    - "Clean up orphaned compute resources that pin quota."
+  prevention:
+    - "Track regional headroom before scaling workloads."
+  tags: [quota, resource-exhausted, capacity]
+
+- id: gcp.insufficient_resources
+  technology: gcp
+  title: "GKE / Compute insufficient resources / ZONE_RESOURCE_POOL_EXHAUSTED"
+  summary: >-
+    A VM or GKE node could not be scheduled/created because the zone lacks
+    available capacity for the requested machine type, or the cluster has no
+    schedulable node room.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "ZONE_RESOURCE_POOL_EXHAUSTED"
+      - "does not have enough resources available"
+      - "Insufficient .* resources"
+      - "0/\\d+ nodes are available"
+    weight: 0.8
+  root_causes:
+    - title: "Zone out of capacity for the machine type"
+      description: >-
+        The selected zone temporarily lacks hardware for the requested machine
+        type, so the VM/node cannot be created.
+      confidence: 0.55
+      category: capacity
+    - title: "GKE cluster has no schedulable capacity"
+      description: >-
+        Pods stay Pending because existing nodes are full and autoscaling is off
+        or capped.
+      confidence: 0.5
+      category: scheduling
+    - title: "Pod requests/affinity exceed node capacity"
+      description: >-
+        Resource requests, taints, or affinity rules mean no node can satisfy
+        the pod even with spare cluster capacity.
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "kubectl describe pod <pod> -n <namespace>"
+      explanation: "Shows scheduling events explaining why a GKE pod is unschedulable."
+      expected_output: "FailedScheduling events citing insufficient cpu/memory or taints."
+    - command: "gcloud compute instances create --help"
+      explanation: "Confirms valid machine types/zones to retry with when a zone is exhausted (read-only help)."
+      expected_output: "Supported flags, machine-type, and zone options."
+  suggested_fixes:
+    - title: "Retry in another zone or machine type"
+      description: >-
+        Use a regional MIG/node pool spanning zones, or pick a different machine
+        type/zone with available capacity.
+    - title: "Enable or raise cluster autoscaling"
+      description: "Turn on the GKE cluster autoscaler (or raise max nodes) so new nodes are added for Pending pods."
+      snippet: |
+        gcloud container clusters update <cluster> \
+          --enable-autoscaling --min-nodes=1 --max-nodes=10 \
+          --node-pool=<pool> --zone=<zone>
+  references:
+    - title: "Fixing GKE insufficient resources / Pending pods"
+      url: "https://devopsaitoolkit.com/blog/gcp-error-insufficient-resources"
+      source: "devopsaitoolkit"
+    - title: "Troubleshooting cluster autoscaler"
+      url: "https://cloud.google.com/kubernetes-engine/docs/how-to/cluster-autoscaler"
+      source: "official docs"
+  warnings:
+    - message: "Pinning workloads to a single zone removes the ability to fail over when that zone is exhausted."
+      severity: medium
+  best_practices:
+    - "Use regional/multi-zone node pools to tolerate single-zone capacity gaps."
+    - "Right-size pod requests so the scheduler can place them."
+  prevention:
+    - "Enable cluster autoscaling with sensible min/max nodes."
+  tags: [gke, capacity, scheduling]

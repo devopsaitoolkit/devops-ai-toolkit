@@ -1,0 +1,58 @@
+name: Feature request
+description: Suggest a new capability or improvement.
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve devops-ai-toolkit! Please describe the problem
+        you want to solve before jumping to a specific solution.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do, and what is currently painful or impossible?
+      placeholder: "When analyzing Helm release errors, the tool does not recognize..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the feature or change you would like to see.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which interface(s) would this affect?
+      multiple: true
+      options:
+        - CLI
+        - SDK
+        - REST API
+        - Knowledge base
+        - Documentation
+        - Other
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds, other tools, or approaches you have already tried.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: read-only
+    attributes:
+      label: Read-only guarantee
+      options:
+        - label: This request does not require the tool to execute commands or mutate any system (read-only design must be preserved).
+          required: true

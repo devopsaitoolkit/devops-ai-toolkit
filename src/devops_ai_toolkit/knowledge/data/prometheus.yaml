@@ -1,0 +1,419 @@
+- id: prometheus.target_down_connection_refused
+  technology: prometheus
+  title: "Scrape target DOWN / connection refused"
+  summary: >-
+    Prometheus marks a target as up=0 and the scrape fails with a connection
+    refused or no route to host error, so the target's metrics stop updating.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "connection refused"
+      - 'up == 0'
+      - "context deadline exceeded \\(Client.Timeout"
+      - 'Get \"http.*\": dial tcp'
+      - "server returned HTTP status 5\\d\\d"
+    weight: 0.75
+  root_causes:
+    - title: "Exporter or app is not listening on the scrape port"
+      description: >-
+        The target process is down, crashed, or bound to a different port than
+        the one configured in the scrape_config, so the TCP connect is refused.
+      confidence: 0.65
+      category: application
+    - title: "Network policy or firewall blocks the scrape path"
+      description: >-
+        A firewall, security group, NetworkPolicy, or service mesh rule drops
+        traffic from Prometheus to the target, yielding refused or timeouts.
+      confidence: 0.45
+      category: network
+    - title: "Wrong target address from service discovery / relabeling"
+      description: >-
+        Relabel rules or SD produce an unreachable __address__ (wrong host, pod
+        IP that no longer exists, or missing port).
+      confidence: 0.4
+      category: configuration
+    - title: "Target requires TLS or auth that is not configured"
+      description: >-
+        The endpoint expects HTTPS, a bearer token, or basic auth that the
+        scrape_config omits, so the handshake or request fails.
+      confidence: 0.35
+      category: authentication
+  diagnostic_commands:
+    - command: "curl -s http://localhost:9090/api/v1/targets | jq '.data.activeTargets[] | {scrapeUrl, health, lastError}'"
+      explanation: "Lists every active target with its health and the exact last scrape error."
+      expected_output: 'health: "up" with empty lastError; failures show the dial/timeout reason.'
+      platform: "Prometheus host"
+    - command: "curl -sv <target-scrape-url>"
+      explanation: "Reproduces the scrape from the Prometheus host to see if the endpoint answers."
+      expected_output: "HTTP 200 with Prometheus text-format metrics, or a connection error."
+    - command: "ss -ltnp | grep <port>"
+      explanation: "Confirms whether anything is actually listening on the expected port on the target host."
+      expected_output: "A LISTEN line for the exporter; nothing means the process is down."
+      platform: "target host"
+  suggested_fixes:
+    - title: "Restore the exporter and confirm the port matches the config"
+      description: >-
+        Start the exporter, verify the listen address/port, and align the
+        scrape_config target and metrics_path with what the exporter exposes.
+      snippet: |
+        scrape_configs:
+          - job_name: node
+            static_configs:
+              - targets: ["10.0.0.5:9100"]
+    - title: "Open the network path and add required scheme/auth"
+      description: >-
+        Allow Prometheus to reach the target port, and set scheme/tls_config or
+        authorization if the endpoint requires it.
+  references:
+    - title: "Fixing Prometheus targets stuck DOWN"
+      url: "https://devopsaitoolkit.com/blog/prometheus-target-down-connection-refused"
+      source: "devopsaitoolkit"
+    - title: "Prometheus configuration: scrape_config"
+      url: "https://prometheus.io/docs/prometheus/latest/configuration/configuration/#scrape_config"
+      source: "official docs"
+  best_practices:
+    - "Alert on up == 0 so a silently down target is noticed immediately."
+    - "Keep scrape targets discoverable via SD instead of brittle static IPs."
+  prevention:
+    - "Validate new scrape_configs against a known-good endpoint before rollout."
+  tags: [scrape, targets, network]
+
+- id: prometheus.context_deadline_exceeded
+  technology: prometheus
+  title: "Scrape failed: context deadline exceeded"
+  summary: >-
+    A scrape did not complete within scrape_timeout; Prometheus aborts the
+    request and the target flips to up=0 even though it is reachable.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "context deadline exceeded"
+      - 'Client.Timeout exceeded while awaiting headers'
+      - "scrape timed out"
+    weight: 0.7
+  root_causes:
+    - title: "Target /metrics is slow to render"
+      description: >-
+        The exporter computes metrics on demand or exposes a huge payload that
+        takes longer than scrape_timeout to serialize and return.
+      confidence: 0.6
+      category: performance
+    - title: "scrape_timeout shorter than scrape_interval allows"
+      description: >-
+        scrape_timeout is set very low (or near a slow backend), so even normal
+        responses miss the deadline under load.
+      confidence: 0.45
+      category: configuration
+    - title: "Network latency or saturated link to the target"
+      description: >-
+        High RTT, packet loss, or a saturated NIC delays the response past the
+        deadline intermittently.
+      confidence: 0.4
+      category: network
+  diagnostic_commands:
+    - command: "time curl -s -o /dev/null -w '%{time_total}\\n' <target-scrape-url>"
+      explanation: "Measures how long the /metrics endpoint takes to fully respond."
+      expected_output: "A value well under your scrape_timeout (e.g. < 2s for a 10s timeout)."
+      platform: "Prometheus host"
+    - command: "curl -s <target-scrape-url> | wc -l"
+      explanation: "Estimates payload size; very high series counts slow scrapes."
+      expected_output: "A line count proportional to exposed series; tens of thousands hints at cardinality issues."
+  suggested_fixes:
+    - title: "Raise scrape_timeout and reduce exposed cardinality"
+      description: >-
+        Increase scrape_timeout below scrape_interval, and drop or aggregate
+        high-cardinality metrics at the exporter or via metric_relabel_configs.
+      snippet: |
+        scrape_configs:
+          - job_name: slow-exporter
+            scrape_interval: 30s
+            scrape_timeout: 20s
+    - title: "Speed up the exporter"
+      description: "Cache expensive computations or precompute metrics so /metrics responds quickly."
+  references:
+    - title: "Diagnosing Prometheus scrape timeouts"
+      url: "https://devopsaitoolkit.com/blog/prometheus-context-deadline-exceeded"
+      source: "devopsaitoolkit"
+    - title: "Prometheus scrape configuration reference"
+      url: "https://prometheus.io/docs/prometheus/latest/configuration/configuration/"
+      source: "official docs"
+  best_practices:
+    - "Keep scrape_timeout < scrape_interval for every job."
+    - "Watch scrape_duration_seconds to catch endpoints trending slow."
+  prevention:
+    - "Load-test exporters at expected series counts before production scraping."
+  tags: [scrape, timeout, performance]
+
+- id: prometheus.out_of_order_sample
+  technology: prometheus
+  title: "Out-of-order sample / duplicate timestamp on append"
+  summary: >-
+    The TSDB rejects a sample because its timestamp is older than or equal to the
+    last sample for that series, dropping the point during ingestion.
+  applies_to: [log, error_string]
+  match:
+    any_of:
+      - "out of order sample"
+      - "out-of-order sample"
+      - "duplicate sample for timestamp"
+      - "timestamp out of order"
+    weight: 0.78
+  root_causes:
+    - title: "Multiple sources write the same series"
+      description: >-
+        Two scrapers, two replicas, or remote_write plus a local scrape append
+        to the same series with overlapping timestamps.
+      confidence: 0.6
+      category: configuration
+    - title: "Clock skew between targets and Prometheus"
+      description: >-
+        A target's clock is ahead or behind, so its sample timestamps arrive out
+        of monotonic order relative to prior writes.
+      confidence: 0.5
+      category: configuration
+    - title: "Pushgateway or batch job pushes stale timestamps"
+      description: >-
+        A job re-pushes metrics with timestamps earlier than already-ingested
+        samples for the same labels.
+      confidence: 0.4
+      category: application
+  diagnostic_commands:
+    - command: "curl -s http://localhost:9090/api/v1/query --data-urlencode 'query=count by (instance) (up)' | jq"
+      explanation: "Helps spot duplicate instances/series that two sources may be writing."
+      expected_output: "One series per real instance; duplicates suggest overlapping writers."
+      platform: "Prometheus host"
+    - command: "timedatectl status"
+      explanation: "Checks system clock and NTP sync, a common cause of out-of-order timestamps."
+      expected_output: "System clock synchronized: yes; NTP service: active."
+      platform: "target or Prometheus host"
+  suggested_fixes:
+    - title: "Deduplicate writers and enforce unique labels"
+      description: >-
+        Ensure each series has exactly one source; add distinguishing labels
+        (instance, replica) so independent writers do not collide.
+    - title: "Sync clocks and consider out-of-order ingestion"
+      description: >-
+        Run NTP everywhere; if late samples are expected, enable the TSDB
+        out_of_order_time_window in newer Prometheus versions.
+      snippet: |
+        storage:
+          tsdb:
+            out_of_order_time_window: 30m
+  references:
+    - title: "Resolving Prometheus out-of-order sample errors"
+      url: "https://devopsaitoolkit.com/blog/prometheus-out-of-order-sample"
+      source: "devopsaitoolkit"
+    - title: "Prometheus storage and TSDB docs"
+      url: "https://prometheus.io/docs/prometheus/latest/storage/"
+      source: "official docs"
+  best_practices:
+    - "Give every replica a unique external/instance label."
+    - "Keep all nodes on NTP to avoid timestamp drift."
+  prevention:
+    - "Avoid scraping and remote-writing the same series into one TSDB."
+  tags: [tsdb, ingestion, samples]
+
+- id: prometheus.query_too_many_samples
+  technology: prometheus
+  title: "Query processing would load too many samples"
+  summary: >-
+    A PromQL query is aborted because it would load more samples into memory than
+    the configured query.max-samples limit allows.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "query processing would load too many samples into memory"
+      - "too many samples"
+      - "exceeded maximum resolution"
+    weight: 0.76
+  root_causes:
+    - title: "Query spans a wide time range over high-cardinality data"
+      description: >-
+        A long range with many matching series multiplies into more samples than
+        max-samples permits.
+      confidence: 0.6
+      category: query
+    - title: "Unbounded selector or missing label filters"
+      description: >-
+        A selector like a bare metric name matches thousands of series; without
+        label filters the sample count explodes.
+      confidence: 0.5
+      category: query
+    - title: "query.max-samples set conservatively"
+      description: >-
+        The default/configured limit is low relative to the dataset, so even
+        moderate queries hit it.
+      confidence: 0.35
+      category: configuration
+  diagnostic_commands:
+    - command: "curl -s http://localhost:9090/api/v1/status/flags | jq '.data[\"query.max-samples\"]'"
+      explanation: "Shows the current max-samples limit the query was measured against."
+      expected_output: "An integer such as 50000000 (the default)."
+      platform: "Prometheus host"
+    - command: "curl -s http://localhost:9090/api/v1/query --data-urlencode 'query=count(<your-metric>)' | jq '.data.result'"
+      explanation: "Counts how many series the offending selector matches, hinting at cardinality."
+      expected_output: "A single value; very large counts explain the sample blow-up."
+  suggested_fixes:
+    - title: "Narrow the query and use recording rules"
+      description: >-
+        Add label filters, shorten the range or increase step, and precompute
+        heavy aggregations with recording rules so dashboards query small series.
+      snippet: |
+        groups:
+          - name: aggregations
+            rules:
+              - record: job:http_requests:rate5m
+                expr: sum by (job) (rate(http_requests_total[5m]))
+    - title: "Reduce cardinality at ingestion"
+      description: "Drop high-cardinality labels with metric_relabel_configs so queries touch fewer series."
+  references:
+    - title: "Fixing Prometheus 'too many samples' query errors"
+      url: "https://devopsaitoolkit.com/blog/prometheus-query-too-many-samples"
+      source: "devopsaitoolkit"
+    - title: "PromQL and recording rules documentation"
+      url: "https://prometheus.io/docs/prometheus/latest/configuration/recording_rules/"
+      source: "official docs"
+  best_practices:
+    - "Back dashboards with recording rules, not raw heavy aggregations."
+    - "Keep label cardinality low and intentional."
+  prevention:
+    - "Review query series counts before publishing dashboards."
+  tags: [promql, query, cardinality]
+
+- id: prometheus.tsdb_no_space_left
+  technology: prometheus
+  title: "TSDB write failed: no space left on device"
+  summary: >-
+    Prometheus cannot write WAL or compact blocks because the storage volume is
+    full, risking data loss and a crash loop.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "no space left on device"
+      - "write to WAL.*no space"
+      - "compaction failed.*no space"
+      - "msg=\"Failed to commit\""
+    weight: 0.8
+  root_causes:
+    - title: "Retention or volume too small for ingest rate"
+      description: >-
+        The TSDB data directory grows past the volume size because retention,
+        ingest rate, and disk size are mismatched.
+      confidence: 0.6
+      category: storage
+    - title: "High cardinality inflating on-disk blocks"
+      description: >-
+        Excessive label cardinality balloons the index and chunks, consuming disk
+        faster than expected.
+      confidence: 0.45
+      category: storage
+    - title: "WAL or snapshot files not being cleaned up"
+      description: >-
+        A stuck compaction or failed truncation leaves WAL segments accumulating
+        on disk.
+      confidence: 0.35
+      category: storage
+  diagnostic_commands:
+    - command: "df -h <tsdb-data-dir>"
+      explanation: "Shows free space on the volume backing the Prometheus data directory."
+      expected_output: "Use% well below 100%; 100% confirms the full disk."
+      platform: "Prometheus host"
+    - command: "du -sh <tsdb-data-dir>/* | sort -h | tail"
+      explanation: "Identifies the largest blocks/WAL consuming the storage."
+      expected_output: "Block directories and a wal/ folder sized by ingest volume."
+    - command: "curl -s http://localhost:9090/api/v1/status/tsdb | jq '.data.headStats'"
+      explanation: "Reports head series and chunk counts, indicating cardinality pressure."
+      expected_output: "numSeries and chunkCount; unexpectedly large numSeries signals cardinality."
+  suggested_fixes:
+    - title: "Grow the volume and right-size retention"
+      description: >-
+        Expand the disk, then set retention to fit the volume by time or size so
+        the TSDB self-prunes.
+      snippet: |
+        # flags
+        --storage.tsdb.retention.time=15d
+        --storage.tsdb.retention.size=200GB
+    - title: "Cut cardinality"
+      description: "Drop or aggregate high-cardinality metrics so on-disk growth slows."
+  references:
+    - title: "Recovering a full Prometheus TSDB volume"
+      url: "https://devopsaitoolkit.com/blog/prometheus-tsdb-no-space-left"
+      source: "devopsaitoolkit"
+    - title: "Prometheus storage retention documentation"
+      url: "https://prometheus.io/docs/prometheus/latest/storage/"
+      source: "official docs"
+  warnings:
+    - message: "A full TSDB volume can corrupt the WAL; back up data before aggressive cleanup."
+      severity: high
+  best_practices:
+    - "Set both retention.time and retention.size to bound disk use."
+    - "Alert on volume usage well before it reaches 100%."
+  prevention:
+    - "Capacity-plan disk from ingest rate and retention up front."
+  tags: [tsdb, storage, disk]
+
+- id: prometheus.promql_parse_error
+  technology: prometheus
+  title: "PromQL parse error"
+  summary: >-
+    A query, alerting rule, or recording rule fails to parse, so the expression
+    is rejected and (for rules) the rule group fails to load.
+  applies_to: [log, command_output, error_string, yaml]
+  match:
+    any_of:
+      - "parse error"
+      - "unexpected character"
+      - 'unexpected \"[^\"]*\" in'
+      - "no arguments for aggregate expression provided"
+      - "bad_data.*invalid parameter \"query\""
+    weight: 0.7
+  root_causes:
+    - title: "Syntax mistake in the expression"
+      description: >-
+        Unbalanced parentheses/braces, a missing range selector, or a stray
+        operator makes the expression invalid.
+      confidence: 0.6
+      category: query
+    - title: "Range vector used where instant vector expected (or vice versa)"
+      description: >-
+        Functions like rate() need a range selector, while arithmetic needs an
+        instant vector; mixing them triggers a parse/type error.
+      confidence: 0.45
+      category: query
+    - title: "Templated rule renders invalid PromQL"
+      description: >-
+        Variable substitution in a generated rule or dashboard produces malformed
+        PromQL after rendering.
+      confidence: 0.35
+      category: configuration
+  diagnostic_commands:
+    - command: "promtool check rules /etc/prometheus/rules/*.yml"
+      explanation: "Validates rule files and reports the exact PromQL parse error and location."
+      expected_output: "SUCCESS per file, or the failing expression with the parse error."
+      platform: "Prometheus host"
+    - command: "curl -s http://localhost:9090/api/v1/query --data-urlencode 'query=<expr>' | jq '{status, errorType, error}'"
+      explanation: "Submits the expression to the API to see the precise parse error message."
+      expected_output: 'status: "error" with errorType bad_data and the parse detail.'
+  suggested_fixes:
+    - title: "Fix the expression and validate with promtool"
+      description: >-
+        Correct the syntax (balanced delimiters, proper range selectors), then
+        run promtool check rules / check query before deploying.
+      snippet: |
+        # range selector required for rate()
+        rate(http_requests_total[5m])
+    - title: "Test queries in the expression browser first"
+      description: "Build and verify PromQL in the Prometheus UI before embedding it in rules."
+  references:
+    - title: "Debugging PromQL parse errors"
+      url: "https://devopsaitoolkit.com/blog/prometheus-promql-parse-error"
+      source: "devopsaitoolkit"
+    - title: "PromQL basics and syntax"
+      url: "https://prometheus.io/docs/prometheus/latest/querying/basics/"
+      source: "official docs"
+  best_practices:
+    - "Run promtool check rules in CI for every rule change."
+    - "Prototype queries in the expression browser before committing."
+  prevention:
+    - "Lint generated/templated PromQL after rendering, not before."
+  tags: [promql, rules, syntax]

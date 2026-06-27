@@ -1,0 +1,18 @@
+$ terraform plan
+
+╷
+│ Error: Unsupported argument
+│
+│   on main.tf line 14, in resource "aws_s3_bucket" "assets":
+│   14:   acl    = "private"
+│
+│ An argument named "acl" is not expected here.
+╵
+╷
+│ Error: Unsupported argument
+│
+│   on main.tf line 21, in resource "aws_instance" "web":
+│   21:   subnet = aws_subnet.public.id
+│
+│ An argument named "subnet" is not expected here. Did you mean "subnet_id"?
+╵

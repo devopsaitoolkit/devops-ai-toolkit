@@ -1,0 +1,45 @@
+$ kubectl describe pod payments-api-7c9d5f8b6c-q4m2x -n payments
+
+Name:             payments-api-7c9d5f8b6c-q4m2x
+Namespace:        payments
+Priority:         0
+Node:             worker-02/10.0.1.32
+Start Time:       Wed, 24 Jun 2026 09:14:01 +0000
+Labels:           app=payments-api
+                  pod-template-hash=7c9d5f8b6c
+Status:           Running
+IP:               10.244.2.41
+Controlled By:    ReplicaSet/payments-api-7c9d5f8b6c
+Containers:
+  payments-api:
+    Container ID:   containerd://b1f2...e9a0
+    Image:          registry.example.com/payments-api:v3.2.0
+    Image ID:       registry.example.com/payments-api@sha256:9c2f...
+    Port:           8080/TCP
+    State:          Waiting
+      Reason:       CrashLoopBackOff
+    Last State:     Terminated
+      Reason:       Error
+      Exit Code:    1
+      Started:      Wed, 24 Jun 2026 09:16:54 +0000
+      Finished:     Wed, 24 Jun 2026 09:16:55 +0000
+    Ready:          False
+    Restart Count:  6
+    Limits:
+      memory:  512Mi
+    Requests:
+      cpu:     100m
+      memory:  256Mi
+    Liveness:  http-get http://:8080/healthz delay=0s timeout=1s period=10s #success=1 #failure=3
+Conditions:
+  Type              Status
+  Ready             False
+  ContainersReady   False
+Events:
+  Type     Reason     Age                  From     Message
+  ----     ------     ----                 ----     -------
+  Normal   Scheduled  4m                   default-scheduler  Successfully assigned payments/payments-api-7c9d5f8b6c-q4m2x to worker-02
+  Normal   Pulled     3m (x4 over 4m)      kubelet  Container image "registry.example.com/payments-api:v3.2.0" already present on machine
+  Normal   Created    3m (x4 over 4m)      kubelet  Created container payments-api
+  Normal   Started    3m (x4 over 4m)      kubelet  Started container payments-api
+  Warning  BackOff    14s (x18 over 4m)    kubelet  Back-off restarting failed container payments-api in pod payments-api-7c9d5f8b6c-q4m2x_payments

@@ -1,0 +1,345 @@
+- id: rabbitmq.connection_refused
+  technology: rabbitmq
+  title: "Connection refused / ECONNREFUSED to broker"
+  summary: >-
+    A client cannot open an AMQP connection to RabbitMQ; the broker is down, not
+    listening, or blocked by network/firewall rules.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "ECONNREFUSED"
+      - "connection refused"
+      - "Connection refused.*5672"
+      - "failed to connect to RabbitMQ"
+    weight: 0.8
+  root_causes:
+    - title: "Broker is not running"
+      description: >-
+        The rabbitmq-server service is stopped or crashed, so nothing accepts
+        AMQP connections on 5672.
+      confidence: 0.6
+      category: availability
+    - title: "Wrong host, port, or vhost"
+      description: >-
+        The client targets the wrong host/port (5672 AMQP vs 15672 management)
+        or a vhost that does not exist.
+      confidence: 0.5
+      category: configuration
+    - title: "Firewall or security group blocks the port"
+      description: "Network rules drop traffic to 5672 before it reaches the broker."
+      confidence: 0.4
+      category: network
+    - title: "TLS/plaintext mismatch"
+      description: >-
+        The client speaks plaintext to a TLS-only listener (5671) or vice versa,
+        so the connection is dropped.
+      confidence: 0.35
+      category: configuration
+  diagnostic_commands:
+    - command: "rabbitmqctl status"
+      explanation: "Confirms the broker is running and shows configured listeners and ports."
+      expected_output: "A status report listing the amqp listener on port 5672."
+      platform: "broker node"
+    - command: "ss -ltnp | grep 5672"
+      explanation: "Shows whether the broker is listening on the AMQP port and on which interface."
+      expected_output: "A LISTEN entry on the expected address:5672."
+      platform: "broker node"
+  suggested_fixes:
+    - title: "Start the broker and verify the listener"
+      description: >-
+        Start RabbitMQ and confirm the AMQP listener is up before retrying the
+        client.
+      snippet: |
+        sudo systemctl start rabbitmq-server
+        rabbitmqctl status | grep -A3 listeners
+    - title: "Fix the connection target"
+      description: "Use the AMQP port (5672 plaintext / 5671 TLS), the correct host, and an existing vhost."
+  references:
+    - title: "RabbitMQ connection refused troubleshooting"
+      url: "https://devopsaitoolkit.com/blog/rabbitmq-error-connection-refused"
+      source: "devopsaitoolkit"
+    - title: "Networking and ports"
+      url: "https://www.rabbitmq.com/networking.html"
+      source: "official docs"
+  best_practices:
+    - "Distinguish AMQP (5672/5671) from management (15672) in client config."
+    - "Health-check the broker listener, not just the process."
+  prevention:
+    - "Monitor the rabbitmq-server service and the AMQP port externally."
+  tags: [connectivity, network, startup]
+
+- id: rabbitmq.memory_alarm
+  technology: rabbitmq
+  title: "Memory resource alarm (vm_memory_high_watermark)"
+  summary: >-
+    RabbitMQ hit its memory high watermark and blocked publishing connections to
+    protect the node from running out of memory.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "vm_memory_high_watermark"
+      - "memory resource limit alarm"
+      - "memory alarm set"
+      - "publishers will be blocked"
+    weight: 0.84
+  root_causes:
+    - title: "Queues backing up faster than consumers drain"
+      description: >-
+        Slow or stopped consumers let messages accumulate in memory until the
+        watermark trips.
+      confidence: 0.6
+      category: workload
+    - title: "Watermark set too low for the node"
+      description: >-
+        vm_memory_high_watermark is a small fraction of RAM, or the absolute
+        limit is undersized.
+      confidence: 0.4
+      category: configuration
+    - title: "Large unacked message backlog"
+      description: >-
+        Consumers fetch with a high/unbounded prefetch and never ack, pinning
+        messages in memory.
+      confidence: 0.45
+      category: application
+  diagnostic_commands:
+    - command: "rabbitmqctl status | grep -A5 memory"
+      explanation: "Shows current memory use and the configured high watermark."
+      expected_output: "memory used near or above the watermark."
+      platform: "broker node"
+    - command: "rabbitmqctl list_queues name messages messages_unacknowledged memory"
+      explanation: "Identifies which queues hold the most messages and memory."
+      expected_output: "Queues with large message and unacked counts."
+      platform: "broker node"
+  suggested_fixes:
+    - title: "Drain queues and bound consumer prefetch"
+      description: >-
+        Scale or fix consumers, set a sane prefetch (basic.qos), and acknowledge
+        promptly so messages leave memory.
+      snippet: |
+        channel.basicQos(50)  # bounded prefetch per consumer
+    - title: "Enable lazy queues / raise the watermark"
+      description: >-
+        Use lazy (classic) or quorum queues to page messages to disk, or raise
+        the watermark within the node's RAM budget.
+      snippet: |
+        # rabbitmq.conf
+        vm_memory_high_watermark.relative = 0.6
+  references:
+    - title: "RabbitMQ memory alarm troubleshooting"
+      url: "https://devopsaitoolkit.com/blog/rabbitmq-error-memory-alarm"
+      source: "devopsaitoolkit"
+    - title: "Memory Alarms"
+      url: "https://www.rabbitmq.com/memory.html"
+      source: "official docs"
+  warnings:
+    - message: "While a memory alarm is set, publishers are blocked and producers may hang."
+      severity: high
+  best_practices:
+    - "Set bounded consumer prefetch and acknowledge messages promptly."
+    - "Prefer quorum/lazy queues for large backlogs to keep memory bounded."
+  prevention:
+    - "Alert on queue depth and node memory before the watermark trips."
+  tags: [memory, flow-control, queues]
+
+- id: rabbitmq.missed_heartbeats
+  technology: rabbitmq
+  title: "Missed heartbeats from client / connection closed"
+  summary: >-
+    RabbitMQ closed a connection because heartbeat frames were missed, usually
+    from a blocked client event loop or a network device dropping idle TCP.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "missed heartbeats from client"
+      - "Heartbeat missing"
+      - "timeout, no response"
+      - "closing AMQP connection.*missed heartbeats"
+    weight: 0.78
+  root_causes:
+    - title: "Blocked client event loop"
+      description: >-
+        Long synchronous work in the connection's thread prevents the client
+        from sending heartbeat frames in time.
+      confidence: 0.55
+      category: application
+    - title: "Idle TCP killed by a firewall/load balancer"
+      description: >-
+        A stateful device drops the idle connection between heartbeats, which
+        the broker then reports as missed.
+      confidence: 0.45
+      category: network
+    - title: "Heartbeat interval too aggressive for the network"
+      description: "A low negotiated heartbeat is intolerant of latency spikes."
+      confidence: 0.35
+      category: configuration
+  diagnostic_commands:
+    - command: "rabbitmqctl list_connections name timeout state"
+      explanation: "Shows per-connection negotiated heartbeat timeout and current state."
+      expected_output: "Connections with their negotiated timeout and state values."
+      platform: "broker node"
+    - command: "grep -i heartbeat /var/log/rabbitmq/*.log"
+      explanation: "Surfaces broker-side records of missed heartbeats and which client closed."
+      expected_output: "Lines noting missed heartbeats and the peer address."
+      platform: "broker node"
+  suggested_fixes:
+    - title: "Run heartbeats and I/O off the busy thread"
+      description: >-
+        Use the client's async/blocking-connection heartbeat support so frames
+        are sent even during processing, or move heavy work off the I/O thread.
+    - title: "Tune heartbeat to the network path"
+      description: "Set a heartbeat that tolerates real latency (e.g. 60s) and enable TCP keepalive on long idle links."
+      snippet: |
+        # rabbitmq.conf
+        heartbeat = 60
+  references:
+    - title: "RabbitMQ missed heartbeats troubleshooting"
+      url: "https://devopsaitoolkit.com/blog/rabbitmq-error-missed-heartbeats"
+      source: "devopsaitoolkit"
+    - title: "Detecting Dead TCP Connections with Heartbeats"
+      url: "https://www.rabbitmq.com/heartbeats.html"
+      source: "official docs"
+  best_practices:
+    - "Keep heavy processing off the connection's I/O thread."
+    - "Set heartbeats and TCP keepalive to survive stateful network devices."
+  prevention:
+    - "Test client behavior under latency and long message processing."
+  tags: [heartbeats, network, connections]
+
+- id: rabbitmq.network_partition
+  technology: rabbitmq
+  title: "Mnesia network partition detected"
+  summary: >-
+    Cluster nodes lost contact and Mnesia reports a partition (split-brain);
+    nodes may hold divergent state until the partition is resolved.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Mnesia.*partitioned network"
+      - "network partition"
+      - "partitions"
+      - "Partial partition"
+    weight: 0.82
+  root_causes:
+    - title: "Network blip between cluster nodes"
+      description: >-
+        Transient connectivity loss between nodes triggers Mnesia to declare a
+        partition.
+      confidence: 0.6
+      category: network
+    - title: "Node overload or GC pause"
+      description: >-
+        A node became unresponsive long enough (paused, swapping) that peers
+        considered it lost.
+      confidence: 0.4
+      category: resources
+    - title: "Partition handling strategy is 'ignore'"
+      description: >-
+        With cluster_partition_handling = ignore, partitions are not auto-healed
+        and split-brain persists.
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "rabbitmqctl cluster_status"
+      explanation: "Shows cluster membership and any reported partitions."
+      expected_output: "A partitions section listing the split nodes when partitioned."
+      platform: "any cluster node"
+    - command: "rabbitmqctl list_queues name policy state | head"
+      explanation: "Reveals whether queues are in a degraded/minority state after a partition."
+      expected_output: "Queue states indicating which nodes are authoritative."
+      platform: "any cluster node"
+  suggested_fixes:
+    - title: "Choose a partition-handling strategy"
+      description: >-
+        Set pause_minority (or autoheal) so the cluster resolves partitions
+        predictably instead of running split-brain.
+      snippet: |
+        # rabbitmq.conf
+        cluster_partition_handling = pause_minority
+    - title: "Recover after a confirmed partition"
+      description: >-
+        Decide the authoritative side, then restart the minority nodes so they
+        rejoin and re-sync from the survivors.
+  references:
+    - title: "RabbitMQ network partition recovery"
+      url: "https://devopsaitoolkit.com/blog/rabbitmq-error-network-partition"
+      source: "devopsaitoolkit"
+    - title: "Clustering and Network Partitions"
+      url: "https://www.rabbitmq.com/partitions.html"
+      source: "official docs"
+  warnings:
+    - message: "Resolving a partition by restarting the wrong side can lose messages enqueued on that side."
+      severity: high
+  best_practices:
+    - "Use pause_minority or quorum queues for predictable partition behavior."
+    - "Run cluster nodes on a low-latency, reliable network."
+  prevention:
+    - "Avoid clustering across unreliable or high-latency links."
+    - "Right-size nodes to avoid long pauses that mimic partitions."
+  tags: [clustering, mnesia, split-brain]
+
+- id: rabbitmq.access_refused_login
+  technology: rabbitmq
+  title: "ACCESS_REFUSED - Login was refused"
+  summary: >-
+    Authentication failed: the username/password is wrong, the user lacks
+    permissions on the vhost, or the user is missing.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "ACCESS_REFUSED"
+      - "Login was refused"
+      - "PLAIN login refused"
+      - "user '.*' - invalid credentials"
+    weight: 0.8
+  root_causes:
+    - title: "Wrong credentials"
+      description: "The supplied username or password does not match a broker user."
+      confidence: 0.55
+      category: authentication
+    - title: "User lacks permissions on the vhost"
+      description: >-
+        The user authenticates but has no configure/write/read permission on the
+        target vhost.
+      confidence: 0.45
+      category: authorization
+    - title: "Default guest user is restricted"
+      description: >-
+        The guest account is loopback-only by default and is refused from remote
+        hosts.
+      confidence: 0.45
+      category: configuration
+  diagnostic_commands:
+    - command: "rabbitmqctl list_users"
+      explanation: "Lists broker users and their tags to confirm the account exists."
+      expected_output: "A table of users; the expected user is present."
+      platform: "broker node"
+    - command: "rabbitmqctl list_permissions -p <vhost>"
+      explanation: "Shows configure/write/read permissions per user on the vhost."
+      expected_output: "Permission rows for the user on that vhost."
+      platform: "broker node"
+  suggested_fixes:
+    - title: "Create the user and grant vhost permissions"
+      description: >-
+        Create a dedicated user (not guest) and grant it permissions on the
+        vhost the client uses.
+      snippet: |
+        rabbitmqctl add_user app 's3cret'
+        rabbitmqctl set_permissions -p / app ".*" ".*" ".*"
+    - title: "Use a non-guest account for remote clients"
+      description: "The guest user is loopback-only; create real users for remote connections instead of loosening guest."
+  references:
+    - title: "RabbitMQ access refused login fix"
+      url: "https://devopsaitoolkit.com/blog/rabbitmq-error-access-refused"
+      source: "devopsaitoolkit"
+    - title: "Access Control (Authentication, Authorisation)"
+      url: "https://www.rabbitmq.com/access-control.html"
+      source: "official docs"
+  warnings:
+    - message: "Do not enable remote access for the guest user; create dedicated, scoped accounts instead."
+      severity: medium
+  best_practices:
+    - "Use per-application users with least-privilege vhost permissions."
+    - "Keep the guest account loopback-only."
+  prevention:
+    - "Provision broker users and permissions as part of deployment automation."
+  tags: [authentication, permissions, vhost]

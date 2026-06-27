@@ -1,0 +1,23 @@
+$ terraform apply
+
+Acquiring state lock. This may take a few moments...
+╷
+│ Error: Error acquiring the state lock
+│
+│ Error message: operation error DynamoDB: PutItem, https response error
+│ StatusCode: 400, RequestID: 8R2K... ConditionalCheckFailedException: The
+│ conditional request failed
+│ Lock Info:
+│   ID:        9d1f2c7a-3e4b-4f8a-9c2d-1a2b3c4d5e6f
+│   Path:      tf-state-prod/network/terraform.tfstate
+│   Operation: OperationTypeApply
+│   Who:       ci-runner@gitlab-runner-7
+│   Version:   1.8.5
+│   Created:   2026-06-24 22:14:03.118293 +0000 UTC
+│   Info:
+│
+│ Terraform acquires a state lock to protect the state from being written by
+│ multiple users at the same time. Please resolve the issue above and try
+│ again. For most commands, you can disable locking with the "-lock=false"
+│ flag, but this is not recommended.
+╵

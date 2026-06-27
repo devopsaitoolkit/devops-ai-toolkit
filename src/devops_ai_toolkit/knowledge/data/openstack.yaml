@@ -1,0 +1,436 @@
+- id: openstack.no_valid_host
+  technology: openstack
+  title: "No valid host was found"
+  summary: >-
+    The Nova scheduler could not place an instance on any compute host because no
+    host satisfied the flavor, filters, or capacity requirements.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "No valid host was found"
+      - "NoValidHost"
+      - "There are not enough hosts available"
+    weight: 0.85
+  root_causes:
+    - title: "Insufficient capacity for the flavor"
+      description: >-
+        No compute host has enough free vCPU, RAM, or disk (after overcommit ratios)
+        to satisfy the requested flavor.
+      confidence: 0.6
+      category: resources
+    - title: "Scheduler filters exclude all hosts"
+      description: >-
+        Aggregate, availability-zone, affinity, or capability filters (e.g. PCI, NUMA)
+        reject every candidate host.
+      confidence: 0.5
+      category: configuration
+    - title: "Compute services down or disabled"
+      description: >-
+        The relevant nova-compute services are down/disabled, so no host is reported
+        as available to the scheduler.
+      confidence: 0.4
+      category: availability
+    - title: "Image properties unsatisfiable"
+      description: >-
+        Image metadata (architecture, hypervisor, required traits) cannot be matched
+        by any host.
+      confidence: 0.35
+      category: configuration
+  diagnostic_commands:
+    - command: "openstack hypervisor list --long"
+      explanation: "Shows each compute host's free vCPU/RAM/disk to spot capacity exhaustion."
+      expected_output: "Per-host running VMs and free resources."
+    - command: "openstack compute service list"
+      explanation: "Lists nova services and whether they are up/enabled."
+      expected_output: "nova-compute hosts shown as up and enabled (or down/disabled)."
+    - command: "openstack server show <instance>"
+      explanation: "Reads the instance's fault field for the scheduler's reason."
+      expected_output: "fault: message containing NoValidHost and the failed filter."
+  suggested_fixes:
+    - title: "Free capacity or pick a smaller flavor"
+      description: >-
+        Reclaim resources, add compute hosts, or request a flavor that fits the
+        available headroom.
+    - title: "Review the enabled scheduler filters"
+      description: >-
+        Confirm the filters and aggregate/AZ metadata allow at least one host to match
+        the request.
+      snippet: |
+        # nova.conf (controller) — inspect, do not blindly widen
+        [filter_scheduler]
+        enabled_filters = AvailabilityZoneFilter,ComputeFilter,ComputeCapabilitiesFilter,ImagePropertiesFilter
+  references:
+    - title: "OpenStack No valid host was found"
+      url: "https://devopsaitoolkit.com/blog/openstack-no-valid-host-was-found"
+      source: "devopsaitoolkit"
+    - title: "Nova scheduler filters"
+      url: "https://docs.openstack.org/nova/latest/admin/scheduling.html"
+      source: "official"
+  best_practices:
+    - "Monitor per-host capacity and overcommit ratios."
+    - "Keep availability zones and host aggregates documented and consistent."
+  prevention:
+    - "Alert on declining free vCPU/RAM headroom before scheduling fails."
+  tags: [nova, scheduler, capacity]
+
+- id: openstack.port_binding_failed
+  technology: openstack
+  title: "Neutron port binding failed (binding_failed)"
+  summary: >-
+    Neutron could not bind a port to the compute host's network backend, leaving
+    the port in a binding_failed state and the instance without networking.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "binding_failed"
+      - "Binding failed for port"
+      - "PortBindingFailed"
+    weight: 0.82
+  root_causes:
+    - title: "Mechanism driver mismatch"
+      description: >-
+        The host's L2 agent (OVS, linuxbridge, OVN) does not match the configured ML2
+        mechanism drivers / vif type, so binding cannot complete.
+      confidence: 0.6
+      category: configuration
+    - title: "L2 agent down on the compute host"
+      description: >-
+        The neutron OVS/linuxbridge agent on the target host is dead, so Neutron sees
+        no agent to bind against.
+      confidence: 0.5
+      category: availability
+    - title: "Network/segment not available on host"
+      description: >-
+        The physical network or VLAN/VXLAN segment is not mapped on the compute host's
+        bridge mappings.
+      confidence: 0.45
+      category: configuration
+  diagnostic_commands:
+    - command: "openstack network agent list"
+      explanation: "Shows which Neutron agents are alive on which hosts."
+      expected_output: "The host's L2 agent listed as alive (XXX/up), or dead."
+    - command: "openstack port show <port-id>"
+      explanation: "Reads the port's binding state and vif details."
+      expected_output: "binding_vif_type: binding_failed and the host id."
+    - command: "openstack network show <network>"
+      explanation: "Confirms the network's provider segment and physical network."
+      expected_output: "provider:physical_network and segmentation details."
+  suggested_fixes:
+    - title: "Restore the L2 agent and bridge mappings"
+      description: >-
+        Ensure the correct neutron agent is running on the host and that
+        bridge_mappings cover the network's physical_network. (Restart steps are
+        operator actions outside read-only diagnosis.)
+    - title: "Align ML2 mechanism drivers"
+      description: >-
+        Make the controller's mechanism_drivers consistent with the agents deployed on
+        compute hosts.
+      snippet: |
+        # ml2_conf.ini (controller) — inspect for consistency
+        [ml2]
+        mechanism_drivers = openvswitch,l2population
+  references:
+    - title: "Neutron binding_failed troubleshooting"
+      url: "https://devopsaitoolkit.com/blog/openstack-neutron-binding-failed"
+      source: "devopsaitoolkit"
+    - title: "Neutron ML2 configuration"
+      url: "https://docs.openstack.org/neutron/latest/admin/config-ml2.html"
+      source: "official"
+  best_practices:
+    - "Keep ML2 mechanism drivers and per-host agents in lockstep."
+    - "Document bridge_mappings per host role."
+  prevention:
+    - "Monitor neutron agent liveness and alert on dead agents."
+  tags: [neutron, networking, ml2]
+
+- id: openstack.messaging_timeout
+  technology: openstack
+  title: "MessagingTimeout"
+  summary: >-
+    An RPC call between OpenStack services timed out waiting for a reply, usually
+    because the target service is overloaded, down, or the message bus is degraded.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "MessagingTimeout"
+      - "Timed out waiting for a reply to message ID"
+      - "oslo_messaging.*Timeout"
+    weight: 0.8
+  root_causes:
+    - title: "Target service down or overloaded"
+      description: >-
+        The service that should answer the RPC (e.g. nova-compute, cinder-volume) is
+        stopped or too busy to reply within the timeout.
+      confidence: 0.55
+      category: availability
+    - title: "RabbitMQ message bus degraded"
+      description: >-
+        The AMQP broker is partitioned, queue-backed-up, or flapping, so replies do
+        not return in time.
+      confidence: 0.5
+      category: availability
+    - title: "Network latency/partition between nodes"
+      description: >-
+        High latency or a partial network partition delays RPC replies past the
+        configured rpc_response_timeout.
+      confidence: 0.4
+      category: network
+  diagnostic_commands:
+    - command: "openstack compute service list"
+      explanation: "Confirms whether the RPC target services are up."
+      expected_output: "The expected services up; any down service explains the timeout."
+    - command: "rabbitmqctl list_queues name messages consumers"
+      explanation: "Shows queue backlog and consumer counts on the message bus."
+      expected_output: "Queues with consumers and low backlog; a stuck queue points to the cause."
+      platform: "rabbitmq node"
+    - command: "rabbitmqctl cluster_status"
+      explanation: "Reports broker cluster health and partitions."
+      expected_output: "All nodes running with no network partitions."
+      platform: "rabbitmq node"
+  suggested_fixes:
+    - title: "Restore the unresponsive service or broker"
+      description: >-
+        Bring the down service/broker back to health; investigate overload (resource
+        starvation) if it is up but slow. (Service restarts are operator actions.)
+    - title: "Tune RPC timeout for known-slow paths"
+      description: >-
+        If a specific operation legitimately takes longer, raise rpc_response_timeout
+        rather than masking a real outage.
+      snippet: |
+        # nova.conf — only after ruling out an outage
+        [DEFAULT]
+        rpc_response_timeout = 120
+  references:
+    - title: "OpenStack MessagingTimeout troubleshooting"
+      url: "https://devopsaitoolkit.com/blog/openstack-messaging-timeout"
+      source: "devopsaitoolkit"
+    - title: "oslo.messaging configuration"
+      url: "https://docs.openstack.org/oslo.messaging/latest/configuration/opts.html"
+      source: "official"
+  warnings:
+    - message: "Raising rpc_response_timeout can hide a failing service or broker. Diagnose first."
+      severity: medium
+  best_practices:
+    - "Monitor RabbitMQ queue depth and consumer counts."
+    - "Alert on any OpenStack service reporting down."
+  prevention:
+    - "Size and HA the message bus for the control plane's RPC volume."
+  tags: [rpc, messaging, rabbitmq]
+
+- id: openstack.volume_error_state
+  technology: openstack
+  title: "Cinder volume in error state"
+  summary: >-
+    A Cinder volume entered an error status (error, error_deleting,
+    error_extending) and is unusable until the underlying backend issue is resolved.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "status.*error_deleting"
+      - "volume .* is in error state"
+      - "\\berror_extending\\b"
+      - "Volume status must be available"
+    weight: 0.8
+  root_causes:
+    - title: "Storage backend failure"
+      description: >-
+        The backend (Ceph, LVM, NetApp, etc.) rejected the create/delete/extend
+        operation, leaving the volume in error.
+      confidence: 0.55
+      category: storage
+    - title: "cinder-volume service or backend down"
+      description: >-
+        The cinder-volume host serving that backend is down, so operations cannot
+        complete and time out into error.
+      confidence: 0.5
+      category: availability
+    - title: "Quota or capacity exhaustion"
+      description: >-
+        The backend ran out of capacity (or hit a quota) mid-operation, failing the
+        request.
+      confidence: 0.4
+      category: resources
+  diagnostic_commands:
+    - command: "openstack volume show <volume-id>"
+      explanation: "Reads the volume's status and any fault/error message."
+      expected_output: "status: error plus an os-vol-mig or fault detail."
+    - command: "openstack volume service list"
+      explanation: "Shows cinder-volume backends and whether they are up/enabled."
+      expected_output: "The backing cinder-volume host up and enabled."
+    - command: "ceph -s"
+      explanation: "Checks Ceph cluster health when Cinder is RBD-backed."
+      expected_output: "HEALTH_OK, or a HEALTH_WARN/ERR explaining the failure."
+      platform: "ceph-backed cinder"
+  suggested_fixes:
+    - title: "Fix the backend, then reset/retry the volume"
+      description: >-
+        Resolve the storage backend or service outage first; only then reset the
+        volume state and retry the operation. State resets are admin actions performed
+        after diagnosis.
+    - title: "Free capacity or raise quota"
+      description: >-
+        Reclaim space on the backend or increase the project quota so the operation can
+        succeed.
+  references:
+    - title: "Cinder volume error state recovery"
+      url: "https://devopsaitoolkit.com/blog/openstack-cinder-volume-error-state"
+      source: "devopsaitoolkit"
+    - title: "Cinder troubleshooting"
+      url: "https://docs.openstack.org/cinder/latest/admin/troubleshooting.html"
+      source: "official"
+  warnings:
+    - message: "cinder reset-state changes DB status without touching the backend and can orphan data. Diagnose the backend first."
+      severity: high
+  best_practices:
+    - "Monitor backend capacity and cinder-volume liveness."
+    - "Keep backend and Cinder service versions compatible."
+  prevention:
+    - "Alert before storage backends reach capacity."
+  tags: [cinder, volume, storage]
+
+- id: openstack.rabbitmq_missed_heartbeats
+  technology: openstack
+  title: "RabbitMQ missed heartbeats from client"
+  summary: >-
+    RabbitMQ closed an OpenStack service's AMQP connection because heartbeats were
+    missed, causing dropped RPCs and reconnect churn across the control plane.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "missed heartbeats from client"
+      - "Too many heartbeats missed"
+      - "AMQP server .* closed the connection"
+    weight: 0.8
+  root_causes:
+    - title: "Service event loop blocked"
+      description: >-
+        A service (eventlet) was blocked on a long synchronous call and could not send
+        heartbeats in time, so the broker dropped it.
+      confidence: 0.55
+      category: application
+    - title: "Network latency or packet loss to broker"
+      description: >-
+        Intermittent network issues between the service and RabbitMQ delay heartbeat
+        frames past the threshold.
+      confidence: 0.5
+      category: network
+    - title: "Broker overload or resource alarm"
+      description: >-
+        RabbitMQ hit a memory/disk alarm or CPU saturation and could not service
+        heartbeats promptly.
+      confidence: 0.4
+      category: resources
+  diagnostic_commands:
+    - command: "rabbitmqctl status"
+      explanation: "Reports broker memory/disk alarms and overall health."
+      expected_output: "No memory/disk alarms; otherwise an alarm explaining the drops."
+      platform: "rabbitmq node"
+    - command: "rabbitmqctl list_connections name peer_host state timeout"
+      explanation: "Lists client connections with negotiated heartbeat timeouts and state."
+      expected_output: "Connections with consistent timeouts; flapping clients stand out."
+      platform: "rabbitmq node"
+    - command: "journalctl -u rabbitmq-server --no-pager -n 100"
+      explanation: "Shows broker logs around the connection closes."
+      expected_output: "missed heartbeats / connection closed entries with the client host."
+      platform: "linux with systemd"
+  suggested_fixes:
+    - title: "Relieve broker/network pressure"
+      description: >-
+        Clear RabbitMQ resource alarms and resolve network loss between services and
+        the broker so heartbeats arrive on time.
+    - title: "Tune heartbeat interval for the environment"
+      description: >-
+        Set a heartbeat value appropriate to network conditions in oslo.messaging.
+      snippet: |
+        # service .conf
+        [oslo_messaging_rabbit]
+        heartbeat_timeout_threshold = 60
+        heartbeat_rate = 2
+  references:
+    - title: "OpenStack RabbitMQ missed heartbeats"
+      url: "https://devopsaitoolkit.com/blog/openstack-rabbitmq-missed-heartbeats"
+      source: "devopsaitoolkit"
+    - title: "RabbitMQ heartbeats"
+      url: "https://www.rabbitmq.com/docs/heartbeats"
+      source: "official"
+  best_practices:
+    - "Monitor RabbitMQ memory/disk alarms and connection churn."
+    - "Keep the control-plane network to the broker low-latency and reliable."
+  prevention:
+    - "Right-size the broker and avoid co-locating it with noisy workloads."
+  tags: [rabbitmq, heartbeat, messaging]
+
+- id: openstack.instance_spawn_failed
+  technology: openstack
+  title: "Instance failed to spawn"
+  summary: >-
+    Nova accepted the boot request but the compute host failed to spawn the
+    instance, leaving it in ERROR — typically an image, libvirt, or networking
+    fault on the host.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Instance failed to spawn"
+      - "Build of instance .* aborted"
+      - "Failed to allocate the network"
+    weight: 0.8
+  root_causes:
+    - title: "Image download/format failure"
+      description: >-
+        The host could not fetch or convert the image (Glance unreachable, bad format,
+        insufficient image cache space).
+      confidence: 0.55
+      category: storage
+    - title: "Libvirt/hypervisor error on the host"
+      description: >-
+        libvirt failed to define or start the domain (CPU model, virtio, or device
+        configuration problem).
+      confidence: 0.5
+      category: configuration
+    - title: "Network allocation failed"
+      description: >-
+        Neutron could not provide the port/IP (binding failure, DHCP, or out of IPs),
+        aborting the build.
+      confidence: 0.45
+      category: network
+    - title: "Out of disk on compute host"
+      description: >-
+        The instance/image directory on the compute node ran out of space mid-spawn.
+      confidence: 0.35
+      category: resources
+  diagnostic_commands:
+    - command: "openstack server show <instance>"
+      explanation: "Reads the instance fault field for the spawn failure reason."
+      expected_output: "fault: with the libvirt/network/image error detail."
+    - command: "nova-manage cell_v2 list_hosts"
+      explanation: "Confirms the compute host is mapped/known to the cell (read-only)."
+      expected_output: "The target compute host listed in its cell."
+    - command: "journalctl -u libvirtd --no-pager -n 100"
+      explanation: "Surfaces libvirt errors on the compute host during the spawn."
+      expected_output: "The domain definition/start error from libvirt."
+      platform: "compute host"
+  suggested_fixes:
+    - title: "Resolve the host-side fault"
+      description: >-
+        Fix the specific cause the fault field names — restore Glance/Neutron
+        connectivity, correct libvirt/flavor settings, or free disk — then rebuild.
+    - title: "Free image-cache and instance disk space"
+      description: >-
+        Reclaim space under the compute node's instances directory so spawns can
+        complete.
+  references:
+    - title: "OpenStack instance failed to spawn"
+      url: "https://devopsaitoolkit.com/blog/openstack-instance-failed-to-spawn"
+      source: "devopsaitoolkit"
+    - title: "Nova compute troubleshooting"
+      url: "https://docs.openstack.org/nova/latest/admin/support-compute.html"
+      source: "official"
+  warnings:
+    - message: "Repeated failed spawns can leave orphaned domains/ports. Clean up only after identifying the root fault."
+      severity: medium
+  best_practices:
+    - "Monitor compute-host disk and libvirt health."
+    - "Validate images and flavors against host CPU/feature support."
+  prevention:
+    - "Alert on compute-host disk pressure and Glance/Neutron reachability."
+  tags: [nova, spawn, libvirt]

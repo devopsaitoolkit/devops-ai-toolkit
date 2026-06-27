@@ -1,0 +1,350 @@
+- id: nginx.bad_gateway_502
+  technology: nginx
+  title: "502 Bad Gateway (upstream)"
+  summary: >-
+    Nginx returned 502 because it could not get a valid response from an upstream
+    server while acting as a reverse proxy.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "502 Bad Gateway"
+      - "connect\\(\\) failed.*while connecting to upstream"
+      - "no live upstreams"
+      - "upstream prematurely closed connection"
+      - "recv\\(\\) failed.*while reading response header from upstream"
+    weight: 0.78
+  root_causes:
+    - title: "Upstream service is down or refusing connections"
+      description: >-
+        The backend (app server, FastCGI, or proxied service) is not listening or
+        crashed, so connect() to the upstream fails.
+      confidence: 0.6
+      category: application
+    - title: "Wrong upstream address, port, or socket"
+      description: >-
+        proxy_pass / fastcgi_pass points at the wrong host:port or a stale unix
+        socket path, so nginx cannot reach the backend.
+      confidence: 0.45
+      category: configuration
+    - title: "Upstream too slow or closing connections early"
+      description: >-
+        The backend resets or closes the connection before sending headers, often
+        under load or due to its own timeouts.
+      confidence: 0.4
+      category: performance
+  diagnostic_commands:
+    - command: "tail -n 50 /var/log/nginx/error.log"
+      explanation: "Shows the exact upstream error (connect refused, prematurely closed, timeout)."
+      expected_output: "connect() failed (111: Connection refused) while connecting to upstream, or similar."
+      platform: "nginx host"
+    - command: "curl -sv http://<upstream-host>:<port>/"
+      explanation: "Tests the upstream directly from the nginx host, bypassing nginx."
+      expected_output: "A valid HTTP response from the backend, or a connection error."
+    - command: "ss -ltnp | grep <upstream-port>"
+      explanation: "Confirms the backend is actually listening on the expected port/socket."
+      expected_output: "A LISTEN line for the backend; nothing means it is down."
+  suggested_fixes:
+    - title: "Restore the backend and verify the upstream target"
+      description: >-
+        Start/repair the upstream service and confirm proxy_pass matches its real
+        address and port. Test with curl from the nginx host.
+      snippet: |
+        upstream app {
+          server 127.0.0.1:8080;
+        }
+        location / { proxy_pass http://app; }
+    - title: "Tune proxy timeouts for slow upstreams"
+      description: "Raise proxy_read_timeout / proxy_connect_timeout if the backend legitimately needs more time."
+  references:
+    - title: "Fixing nginx 502 Bad Gateway errors"
+      url: "https://devopsaitoolkit.com/blog/nginx-502-bad-gateway-upstream"
+      source: "devopsaitoolkit"
+    - title: "ngx_http_proxy_module documentation"
+      url: "https://nginx.org/en/docs/http/ngx_http_proxy_module.html"
+      source: "official docs"
+  best_practices:
+    - "Health-check upstreams and alert when nginx logs connection failures."
+    - "Keep proxy_pass targets in an upstream block for clarity and failover."
+  prevention:
+    - "Start the backend before nginx and validate connectivity on deploy."
+  tags: [proxy, upstream, "502"]
+
+- id: nginx.forbidden_403
+  technology: nginx
+  title: "403 Forbidden"
+  summary: >-
+    Nginx denied the request with 403, refusing to serve the resource due to
+    permissions, access rules, or a missing index.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "403 Forbidden"
+      - "directory index of .* is forbidden"
+      - "Permission denied.*open\\(\\)"
+      - "access forbidden by rule"
+    weight: 0.72
+  root_causes:
+    - title: "Filesystem permissions block the worker user"
+      description: >-
+        The nginx worker user (e.g. www-data/nginx) lacks read/execute on the
+        file or a parent directory in the path.
+      confidence: 0.6
+      category: authentication
+    - title: "Directory listing requested with no index file"
+      description: >-
+        A directory is requested, autoindex is off, and no index file exists, so
+        nginx forbids the listing.
+      confidence: 0.45
+      category: configuration
+    - title: "Explicit deny / allow access rule"
+      description: >-
+        A deny directive, satisfy/auth rule, or IP allowlist blocks the client.
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "tail -n 50 /var/log/nginx/error.log"
+      explanation: "Reveals whether the 403 is from permissions, missing index, or an access rule."
+      expected_output: "'Permission denied', 'directory index ... is forbidden', or 'access forbidden by rule'."
+      platform: "nginx host"
+    - command: "namei -l /var/www/site/path/to/file"
+      explanation: "Shows ownership/permissions along the entire path so you can find the blocking component."
+      expected_output: "Each path segment with mode/owner; a missing x/r on a dir blocks the worker."
+    - command: "ps -o user= -C nginx | sort -u"
+      explanation: "Identifies the user nginx workers run as, to compare against file ownership."
+      expected_output: "The worker user (e.g. www-data or nginx)."
+  suggested_fixes:
+    - title: "Grant read/traverse to the worker user"
+      description: >-
+        Ensure the worker user can read the file and execute (traverse) every
+        parent directory in the document path.
+      snippet: |
+        chown -R www-data:www-data /var/www/site
+        chmod -R a+rX /var/www/site
+    - title: "Provide an index or scope access rules"
+      description: "Add an index file (or enable autoindex deliberately) and review deny/allow and auth directives."
+  references:
+    - title: "Fixing nginx 403 Forbidden"
+      url: "https://devopsaitoolkit.com/blog/nginx-403-forbidden"
+      source: "devopsaitoolkit"
+    - title: "ngx_http_core_module: index and access"
+      url: "https://nginx.org/en/docs/http/ngx_http_core_module.html"
+      source: "official docs"
+  best_practices:
+    - "Use a+rX for static roots so directories stay traversable."
+    - "Keep document roots owned consistently with the worker user."
+  prevention:
+    - "Verify path permissions on deploy, especially after copying files as root."
+  tags: [permissions, static, "403"]
+
+- id: nginx.address_already_in_use
+  technology: nginx
+  title: "bind() to 0.0.0.0:80 failed (address already in use)"
+  summary: >-
+    Nginx cannot start because another process already holds the listen port, so
+    bind() fails and the master exits.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "address already in use"
+      - "bind\\(\\) to .* failed"
+      - "still could not bind"
+      - "Address already in use\\)"
+    weight: 0.8
+  root_causes:
+    - title: "Another process owns the port"
+      description: >-
+        Apache, a stray nginx, or another service is already listening on :80/:443
+        so nginx cannot bind it.
+      confidence: 0.6
+      category: configuration
+    - title: "A previous nginx instance did not shut down"
+      description: >-
+        An old master/worker is still running (or wasn't reloaded cleanly),
+        keeping the socket bound.
+      confidence: 0.5
+      category: application
+    - title: "Duplicate listen directive across server blocks"
+      description: >-
+        Two server blocks declare the same listen address:port without
+        reuseport/SO_REUSEADDR semantics, conflicting on bind.
+      confidence: 0.35
+      category: configuration
+  diagnostic_commands:
+    - command: "ss -ltnp | grep -E ':80 |:443 '"
+      explanation: "Shows which process currently holds the listen port."
+      expected_output: "A LISTEN line naming the owning process (nginx, apache2, etc.)."
+      platform: "nginx host"
+    - command: "systemctl status nginx --no-pager -l"
+      explanation: "Confirms the bind failure and whether a stale instance is around."
+      expected_output: "Active: failed with 'address already in use' in the log."
+    - command: "nginx -t"
+      explanation: "Validates config and can surface duplicate listen directives."
+      expected_output: "syntax is ok / test is successful, or a duplicate-listen warning."
+  suggested_fixes:
+    - title: "Free the port or stop the conflicting service"
+      description: >-
+        Identify the owning process from ss and stop it (e.g. disable Apache on
+        :80), then start nginx.
+      snippet: |
+        systemctl stop apache2
+        systemctl disable apache2
+        systemctl start nginx
+    - title: "Remove duplicate listen directives"
+      description: "Ensure only one server block binds a given address:port, or use reuseport intentionally."
+  references:
+    - title: "Fixing nginx 'address already in use'"
+      url: "https://devopsaitoolkit.com/blog/nginx-address-already-in-use"
+      source: "devopsaitoolkit"
+    - title: "ngx_http_core_module: listen"
+      url: "https://nginx.org/en/docs/http/ngx_http_core_module.html#listen"
+      source: "official docs"
+  best_practices:
+    - "Run nginx -t and check for port owners before (re)starting."
+    - "Avoid co-hosting two web servers on the same port."
+  prevention:
+    - "Stop/disable conflicting web servers during nginx provisioning."
+  tags: [bind, port, startup]
+
+- id: nginx.upstream_timed_out
+  technology: nginx
+  title: "upstream timed out (504 Gateway Time-out)"
+  summary: >-
+    Nginx gave up waiting for the upstream and returned 504, logging an upstream
+    timeout while connecting, sending, or reading.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "upstream timed out"
+      - "504 Gateway Time-out"
+      - "while reading response header from upstream"
+      - "while connecting to upstream"
+    weight: 0.78
+  root_causes:
+    - title: "Backend is slow or overloaded"
+      description: >-
+        The upstream takes longer than proxy_read_timeout to respond (slow query,
+        saturated worker pool), so nginx times out.
+      confidence: 0.6
+      category: performance
+    - title: "Proxy timeouts set too low"
+      description: >-
+        proxy_connect_timeout / proxy_read_timeout are shorter than the backend's
+        legitimate response time.
+      confidence: 0.45
+      category: configuration
+    - title: "Network path to upstream is degraded"
+      description: >-
+        Packet loss or latency to the backend stretches connect/read past the
+        timeout intermittently.
+      confidence: 0.35
+      category: network
+  diagnostic_commands:
+    - command: "grep 'upstream timed out' /var/log/nginx/error.log | tail"
+      explanation: "Confirms which phase (connecting/reading) timed out and against which upstream."
+      expected_output: "upstream timed out (110: Connection timed out) while reading response header from upstream."
+      platform: "nginx host"
+    - command: "curl -s -o /dev/null -w 'time_total=%{time_total}\\n' http://<upstream>:<port>/<slow-path>"
+      explanation: "Measures how long the upstream actually takes for the slow request."
+      expected_output: "A duration; if it exceeds proxy_read_timeout, that is the cause."
+    - command: "ss -tnp dst <upstream-ip>"
+      explanation: "Inspects connection states to the upstream, revealing stuck/retrying connects."
+      expected_output: "ESTAB connections; many SYN-SENT suggests an unreachable/slow backend."
+  suggested_fixes:
+    - title: "Speed up the backend or raise proxy timeouts"
+      description: >-
+        Optimize the slow upstream response, and if the latency is legitimate,
+        increase proxy_connect_timeout / proxy_read_timeout accordingly.
+      snippet: |
+        location / {
+          proxy_pass http://app;
+          proxy_connect_timeout 5s;
+          proxy_read_timeout 60s;
+        }
+    - title: "Scale or load-balance the upstream"
+      description: "Add backend capacity or more upstream servers so requests are served within the timeout."
+  references:
+    - title: "Fixing nginx upstream timed out / 504 errors"
+      url: "https://devopsaitoolkit.com/blog/nginx-upstream-timed-out"
+      source: "devopsaitoolkit"
+    - title: "ngx_http_proxy_module: timeouts"
+      url: "https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_read_timeout"
+      source: "official docs"
+  best_practices:
+    - "Set proxy timeouts to match real backend latency, not arbitrarily high."
+    - "Monitor upstream response time so slow trends are caught early."
+  prevention:
+    - "Load-test the upstream and size timeouts/capacity from results."
+  tags: [proxy, timeout, "504"]
+
+- id: nginx.server_names_hash
+  technology: nginx
+  title: "could not build server_names_hash"
+  summary: >-
+    Nginx failed to start or reload because a server_name (or similar) is too long
+    for the configured hash bucket size.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "could not build server_names_hash"
+      - "server_names_hash_bucket_size"
+      - "could not build .* hash, you should increase"
+      - "could not build optimal .* hash"
+    weight: 0.8
+  root_causes:
+    - title: "A server_name exceeds the hash bucket size"
+      description: >-
+        One or more long server_name values do not fit the default
+        server_names_hash_bucket_size, so the hash cannot be built.
+      confidence: 0.65
+      category: configuration
+    - title: "Many or very long names need a larger max size"
+      description: >-
+        A large set of names overflows server_names_hash_max_size, requiring it to
+        be raised.
+      confidence: 0.45
+      category: configuration
+    - title: "Same pattern in other *_hash directives"
+      description: >-
+        Long map keys or types entries trigger the equivalent hash error for
+        map_hash_bucket_size / types_hash_bucket_size.
+      confidence: 0.3
+      category: configuration
+  diagnostic_commands:
+    - command: "nginx -t"
+      explanation: "Tests the config and prints the exact hash directive and value nginx suggests."
+      expected_output: "could not build server_names_hash, you should increase server_names_hash_bucket_size: 64."
+      platform: "nginx host"
+    - command: "grep -rn 'server_name' /etc/nginx/"
+      explanation: "Finds the long server_name(s) causing the overflow."
+      expected_output: "server_name lines; the longest values are the culprits."
+    - command: "grep -rn 'server_names_hash' /etc/nginx/"
+      explanation: "Shows any existing hash size settings to know the current baseline."
+      expected_output: "Current bucket/max size directives, or none (using defaults)."
+  suggested_fixes:
+    - title: "Increase the hash bucket size in http {}"
+      description: >-
+        Raise server_names_hash_bucket_size to the next power of two (typically
+        the CPU cache line multiple nginx suggests), then nginx -t and reload.
+      snippet: |
+        http {
+          server_names_hash_bucket_size 128;
+        }
+    - title: "Raise the max hash size for many names"
+      description: "If you have a large number of server_names, also increase server_names_hash_max_size."
+      snippet: |
+        http {
+          server_names_hash_max_size 1024;
+        }
+  references:
+    - title: "Fixing nginx server_names_hash errors"
+      url: "https://devopsaitoolkit.com/blog/nginx-server-names-hash"
+      source: "devopsaitoolkit"
+    - title: "Setting up hashes in nginx"
+      url: "https://nginx.org/en/docs/hash.html"
+      source: "official docs"
+  best_practices:
+    - "Set hash bucket size to a power of two matching the suggestion in nginx -t."
+    - "Validate with nginx -t before every reload."
+  prevention:
+    - "Bump hash sizes proactively when adding many or long server_names."
+  tags: [config, hash, server-name]

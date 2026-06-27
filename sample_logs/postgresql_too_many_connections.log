@@ -1,0 +1,7 @@
+2026-06-24 20:33:01.221 UTC [4471] LOG:  database system is ready to accept connections
+2026-06-24 20:41:18.554 UTC [8812] FATAL:  sorry, too many clients already
+2026-06-24 20:41:18.559 UTC [8813] FATAL:  sorry, too many clients already
+2026-06-24 20:41:19.002 UTC [8814] FATAL:  remaining connection slots are reserved for non-replication superuser connections
+2026-06-24 20:41:19.318 UTC [8815] FATAL:  too many connections for role "app_rw"
+2026-06-24 20:41:20.771 UTC app@orders ERROR:  connection to server at "10.0.5.12", port 5432 failed: FATAL:  sorry, too many clients already
+2026-06-24 20:41:21.004 UTC [4471] LOG:  active connections: 100 of max_connections 100

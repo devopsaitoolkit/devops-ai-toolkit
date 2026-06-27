@@ -1,0 +1,17 @@
+$ openstack volume show vol-7e2b9a14 -c status -c name -f yaml
+status: error
+name: vol-7e2b9a14
+
+# cinder-scheduler.log
+2026-06-24 14:22:08.554 19044 WARNING cinder.scheduler.filter_scheduler [req-2a7e9c10 admin demo] No weighed backend found for volume with properties: {'size': 500}
+2026-06-24 14:22:08.561 19044 ERROR cinder.scheduler.flows.create_volume [req-2a7e9c10 admin demo] Failed to run task cinder.scheduler.flows.create_volume.ScheduleCreateVolumeTask: No valid backend was found. No weighed backends available
+2026-06-24 14:22:09.802 20481 ERROR cinder.volume.manager [req-2a7e9c10 admin demo] Volume vol-7e2b9a14 is in error state and cannot be scheduled
+2026-06-24 14:22:09.811 20481 ERROR cinder.volume.manager [req-2a7e9c10 admin demo] Volume status must be available to retype, current status is error
+
+$ openstack volume service list -c Binary -c Host -c Status -c State
++------------------+----------------------+----------+-------+
+| Binary           | Host                 | Status   | State |
++------------------+----------------------+----------+-------+
+| cinder-scheduler | controller           | enabled  | up    |
+| cinder-volume    | cinder-01@ceph       | enabled  | down  |
++------------------+----------------------+----------+-------+
