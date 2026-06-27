@@ -36,6 +36,11 @@ class AIProvider(Protocol):
         ...
 
 
+# Canonical public name for the provider interface. The AI/LLM layer is itself a
+# plugin point: the engine depends only on this Protocol, never on a vendor SDK.
+LLMProvider = AIProvider
+
+
 class NullProvider:
     """Default provider used when no AI backend is configured.
 

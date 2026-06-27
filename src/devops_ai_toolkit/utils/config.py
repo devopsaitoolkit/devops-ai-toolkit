@@ -29,6 +29,11 @@ class Settings:
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.0-flash"
 
+    azure_openai_api_key: str | None = None
+    azure_openai_endpoint: str | None = None
+    azure_openai_deployment: str = "gpt-4o-mini"
+    azure_openai_api_version: str = "2024-06-01"
+
     ollama_host: str = "http://localhost:11434"
     ollama_model: str = "llama3.1"
 
@@ -59,6 +64,12 @@ class Settings:
             gemini_api_key=get("GEMINI_API_KEY", "GOOGLE_API_KEY", "DEVOPS_AI_GEMINI_KEY"),
             gemini_model=get("DEVOPS_AI_GEMINI_MODEL", default="gemini-2.0-flash")
             or "gemini-2.0-flash",
+            azure_openai_api_key=get("AZURE_OPENAI_API_KEY", "DEVOPS_AI_AZURE_OPENAI_KEY"),
+            azure_openai_endpoint=get("AZURE_OPENAI_ENDPOINT"),
+            azure_openai_deployment=get("AZURE_OPENAI_DEPLOYMENT", default="gpt-4o-mini")
+            or "gpt-4o-mini",
+            azure_openai_api_version=get("AZURE_OPENAI_API_VERSION", default="2024-06-01")
+            or "2024-06-01",
             ollama_host=get("OLLAMA_HOST", default="http://localhost:11434")
             or "http://localhost:11434",
             ollama_model=get("DEVOPS_AI_OLLAMA_MODEL", default="llama3.1") or "llama3.1",

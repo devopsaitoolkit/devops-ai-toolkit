@@ -30,13 +30,23 @@ from .models import (
     Technology,
     ValidationResult,
 )
+from .plugins import (
+    AnalyzerPlugin,
+    KnowledgeBackedPlugin,
+    PluginManager,
+    PluginMetadata,
+)
 
 __all__ = [
     "AnalysisEngine",
     "AnalysisRequest",
     "AnalysisResult",
+    "AnalyzerPlugin",
     "ErrorCatalog",
     "ExplainResult",
+    "KnowledgeBackedPlugin",
+    "PluginManager",
+    "PluginMetadata",
     "SourceKind",
     "Technology",
     "ValidationResult",

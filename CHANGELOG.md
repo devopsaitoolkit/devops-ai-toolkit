@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Plugin architecture.** The engine now contains no technology-specific logic;
+  every technology is an independent `AnalyzerPlugin` discovered by a
+  `PluginManager` (built-ins via module discovery, third-party plugins via the
+  `devops_ai_toolkit.plugins` entry point). 21 built-in plugins ship in-tree.
+- **Plugin Manager** with discovery, enable/disable (persisted), compatibility
+  validation (`minimum_core_version`), conflict resolution, graceful failure
+  isolation, and a `doctor` health report.
+- **Third-party Plugin SDK:** `devops-ai create-plugin <name>` scaffolds a
+  complete, installable, auto-discovered plugin project.
+- **CLI** `devops-ai plugins list|info|enable|disable|doctor|update` and
+  **REST** `GET /plugins`, `GET /plugins/{name}`, `POST /plugins/enable|disable`.
+- **Marketplace + enterprise metadata** on every plugin (author, license,
+  `minimum_core_version`, tags, supported platforms, `signed`/`checksum`).
+- **Azure OpenAI** LLM provider, and the `LLMProvider` interface is now a plugin
+  point with a `devops_ai_toolkit.llm_providers` entry point.
+- New built-in coverage: Grafana, LINSTOR, and VMware vSphere signatures.
+
+### Changed
+
+- Result assembly extracted to a shared module reused by the engine and plugins.
+- The engine sources signatures and manifest validation from plugins.
+
 ## [0.1.0] - 2026-06-27
 
 Initial public release.

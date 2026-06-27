@@ -1,0 +1,93 @@
+- id: grafana.datasource_bad_gateway
+  technology: grafana
+  title: "Grafana panel: 'Bad Gateway' / 'data source proxy error'"
+  summary: >-
+    A Grafana panel cannot reach its data source through the server-side proxy,
+    returning 502 Bad Gateway or a proxy error instead of data.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "data source proxy error"
+      - "Bad Gateway"
+      - "tsdb\\.HandleRequest"
+      - "dial tcp .* connect: connection refused"
+    weight: 0.72
+  root_causes:
+    - title: "Data source URL or port is wrong / unreachable"
+      description: >-
+        The configured data source URL points at a host/port Grafana cannot
+        reach from the server (DNS, firewall, wrong scheme, container network).
+      confidence: 0.6
+      category: configuration
+    - title: "Backing data source (Prometheus/Loki/DB) is down"
+      description: "The upstream data source service is not running or is overloaded."
+      confidence: 0.5
+      category: dependency
+    - title: "TLS / auth misconfiguration on the data source"
+      description: "Self-signed cert, wrong auth, or skip-verify needed for the proxy call."
+      confidence: 0.4
+      category: tls
+  diagnostic_commands:
+    - command: "curl -sS -o /dev/null -w '%{http_code}\\n' http://<datasource-host>:<port>/api/health"
+      explanation: "Checks reachability of the data source from the Grafana host."
+      expected_output: "200 when the data source is reachable and healthy."
+    - command: "journalctl -u grafana-server --no-pager -n 100"
+      explanation: "Shows the data source proxy error and the upstream address Grafana tried."
+      expected_output: "A 'proxy error' line naming the unreachable upstream."
+  suggested_fixes:
+    - title: "Fix the data source URL and verify connectivity"
+      description: >-
+        Correct the URL/port in the data source settings and use 'Save & test'.
+        Inside containers, use the service name, not localhost.
+  references:
+    - title: "Grafana data source documentation"
+      url: "https://grafana.com/docs/grafana/latest/datasources/"
+      source: "official docs"
+  best_practices:
+    - "Use 'Save & test' after editing a data source."
+    - "Reference services by DNS name in containerized deployments."
+  prevention:
+    - "Alert on data source health so outages surface before dashboards do."
+  tags: [grafana, datasource, proxy]
+
+- id: grafana.login_failed_invalid_credentials
+  technology: grafana
+  title: "Grafana: 'Invalid username or password' / login failures"
+  summary: >-
+    Users cannot sign in to Grafana; the login API returns invalid credentials
+    or the configured auth provider rejects the request.
+  applies_to: [log, error_string]
+  match:
+    any_of:
+      - "Invalid username or password"
+      - "Invalid API key"
+      - "auth\\.basic.*failed"
+      - "login\\. extra error"
+    weight: 0.6
+  root_causes:
+    - title: "Wrong credentials or expired API key/token"
+      description: "The supplied password/token is incorrect or has been rotated."
+      confidence: 0.55
+      category: authentication
+    - title: "External auth (LDAP/OAuth) misconfigured"
+      description: "LDAP bind, OAuth client, or role mapping is wrong, so valid users are rejected."
+      confidence: 0.45
+      category: configuration
+  diagnostic_commands:
+    - command: "journalctl -u grafana-server --no-pager | grep -i 'auth\\|login'"
+      explanation: "Reveals which auth path failed and why."
+      expected_output: "A specific reason (bad bind DN, token expired, etc.)."
+  suggested_fixes:
+    - title: "Reset the admin password or fix the auth provider config"
+      description: >-
+        Use grafana-cli to reset the admin password, or correct the LDAP/OAuth
+        settings and reload. Never commit secrets to grafana.ini.
+  references:
+    - title: "Grafana authentication docs"
+      url: "https://grafana.com/docs/grafana/latest/setup-grafana/configure-security/configure-authentication/"
+      source: "official docs"
+  best_practices:
+    - "Store auth secrets in environment variables or a secret manager."
+  prevention:
+    - "Test SSO/LDAP changes in staging before production rollout."
+  tags: [grafana, auth, login]

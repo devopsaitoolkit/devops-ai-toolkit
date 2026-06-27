@@ -54,3 +54,26 @@ class VersionResponse(BaseModel):
 
     name: str = "devops-ai-toolkit"
     version: str
+
+
+class PluginSummary(BaseModel):
+    """A compact plugin entry for the plugin list endpoint."""
+
+    name: str
+    version: str
+    source: str
+    enabled: bool
+    technologies: list[str] = Field(default_factory=list)
+
+
+class PluginToggleBody(BaseModel):
+    """Body for enable/disable plugin endpoints."""
+
+    name: str = Field(..., min_length=1)
+
+
+class PluginToggleResponse(BaseModel):
+    """Response after toggling a plugin."""
+
+    name: str
+    enabled: bool

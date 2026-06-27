@@ -171,23 +171,51 @@ flowchart TD
     SDK --> ENGINE
     API --> ENGINE
 
-    subgraph CORE["AnalysisEngine (read-only)"]
+    subgraph CORE["AnalysisEngine (read-only · no technology-specific logic)"]
         ENGINE["AnalysisEngine"]
-        ENGINE --> DET["Detectors / SignatureMatcher"]
-        ENGINE --> KB["KnowledgeBase<br/>(deterministic signatures)"]
+        ENGINE --> PM["Plugin Manager"]
         ENGINE -.optional enrichment.-> PROV
     end
 
-    subgraph PROVIDERS["Provider adapter (optional)"]
-        PROV["AIProvider protocol"]
+    subgraph PLUGINS["Analyzer plugins (built-in + third-party)"]
+        PM --> KPLUG["Kubernetes"]
+        PM --> DPLUG["Docker"]
+        PM --> TPLUG["Terraform"]
+        PM --> OPLUG["OpenStack"]
+        PM --> MORE["20+ more · your own"]
+    end
+
+    subgraph PROVIDERS["LLMProvider adapters (optional)"]
+        PROV["LLMProvider interface"]
         PROV --> ANT["Anthropic"]
-        PROV --> OAI["OpenAI"]
+        PROV --> OAI["OpenAI / Azure OpenAI"]
         PROV --> GEM["Gemini"]
         PROV --> OLL["Ollama"]
     end
 ```
 
-The toolkit follows **clean architecture**: all business logic lives in a single `AnalysisEngine`, and the CLI, SDK and REST API are thin adapters that only handle I/O and rendering. Deterministic analysis is driven by `Detectors` + a packaged `KnowledgeBase` of signatures; an LLM `Provider` is consulted **only** when you opt into enrichment, behind a vendor-agnostic protocol so the core never imports a vendor SDK. The **read-only guarantee** is structural: the engine inspects text and returns guidance — it never executes commands, mutates files, or touches your infrastructure.
+The toolkit follows **clean, plugin-based architecture**: all orchestration lives in a single `AnalysisEngine`, and the CLI, SDK and REST API are thin adapters that only handle I/O and rendering. The engine contains **no technology-specific logic** — every technology is an independent **plugin** discovered by the `PluginManager` (built-ins by module discovery, third-party plugins via entry points), so you add support for new technologies without touching the core. LLM providers are themselves a plugin point behind the vendor-agnostic `LLMProvider` interface, consulted **only** when you opt into enrichment. The **read-only guarantee** is structural: the engine inspects text and returns guidance — it never executes commands, mutates files, or touches your infrastructure.
+
+---
+
+## 🔌 Plugin Architecture
+
+Every supported technology is a self-contained plugin implementing the `AnalyzerPlugin` interface. The core never changes when you add one — the engine discovers built-in plugins automatically and third-party plugins via the `devops_ai_toolkit.plugins` entry point.
+
+```bash
+# See everything the engine discovered (built-in + installed third-party)
+devops-ai plugins list
+devops-ai plugins info kubernetes
+devops-ai plugins doctor        # health + compatibility report
+devops-ai plugins disable redis # toggles are persisted
+
+# Scaffold your own installable plugin in seconds
+devops-ai create-plugin mycompany-plugin
+cd mycompany-plugin && pip install -e .
+devops-ai plugins list          # your plugin is now auto-discovered
+```
+
+Plugins ship marketplace-ready metadata (`name`, `version`, `author`, `license`, `minimum_core_version`, `tags`, `supported_platforms`, `repository`, …) and support enterprise needs — private/internal plugins, signing (`signed`/`checksum`), version pinning, offline install, and compatibility validation. See the [Plugin Guide](docs/plugins.md), [Plugin Development](docs/plugin-development.md), [Marketplace design](docs/plugin-marketplace.md) and [Enterprise plugins](docs/enterprise-plugins.md).
 
 ---
 
@@ -352,11 +380,14 @@ All current and future interfaces reuse the same `AnalysisEngine`, so each one i
 - [x] CLI (`devops-ai`)
 - [x] Python SDK (`AnalysisEngine`)
 - [x] REST API (FastAPI)
+- [x] Plugin architecture (built-in + third-party, `create-plugin`)
+- [x] Multi-provider LLM adapters (Anthropic, OpenAI, Azure OpenAI, Gemini, Ollama)
+- [ ] Plugin marketplace / registry
 - [ ] Web UI
 - [ ] VS Code extension
 - [ ] GitHub Action
 - [ ] MCP server
-- [ ] Desktop app
+- [ ] Desktop app · Enterprise edition
 
 See [`docs/roadmap.md`](docs/roadmap.md) and the planned-interface design notes in [`docs/`](docs/).
 
@@ -371,7 +402,8 @@ Full docs live in [`docs/`](docs/README.md):
 - [SDK guide](docs/sdk-guide.md)
 - [REST API guide](docs/rest-api-guide.md)
 - [Knowledge base](docs/knowledge-base.md)
-- [AI providers](docs/ai-providers.md)
+- [Plugin guide](docs/plugins.md) · [Plugin development](docs/plugin-development.md) · [Enterprise plugins](docs/enterprise-plugins.md)
+- [AI / LLM providers](docs/llm-providers.md)
 - [Contributing](docs/contributing.md)
 
 More DevOps troubleshooting guides are on the [blog](https://devopsaitoolkit.com/blog), and there's a hosted [AI Incident Response Assistant](https://devopsaitoolkit.com/dashboard/incident-response) if you'd rather not self-host.

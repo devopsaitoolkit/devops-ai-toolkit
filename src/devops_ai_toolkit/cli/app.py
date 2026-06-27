@@ -17,6 +17,8 @@ from ..analysis import AnalysisEngine
 from ..explainers import ErrorCatalog
 from ..models.enums import Technology
 from ..output import render_analysis, render_explanation, render_validation, to_json
+from .plugins import build_manager, plugins_app
+from .scaffold import create_plugin as scaffold_plugin
 
 app = typer.Typer(
     name="devops-ai",
@@ -25,6 +27,7 @@ app = typer.Typer(
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
+app.add_typer(plugins_app, name="plugins")
 console = Console()
 err_console = Console(stderr=True)
 
@@ -44,12 +47,13 @@ def _read_input(source: str | None) -> tuple[str, str | None]:
 
 
 def _engine(provider: str | None) -> AnalysisEngine:
-    """Construct an engine, optionally overriding the AI provider."""
+    """Construct an engine that respects disabled plugins, optional provider override."""
+    manager = build_manager()
     if provider:
         from ..providers.registry import get_provider
 
-        return AnalysisEngine(provider=get_provider(provider))
-    return AnalysisEngine()
+        return AnalysisEngine(provider=get_provider(provider), plugin_manager=manager)
+    return AnalysisEngine(plugin_manager=manager)
 
 
 @app.command()
@@ -132,6 +136,23 @@ def serve(
         err_console.print("[red]Install the API extra:[/red] pip install 'devops-ai-toolkit[api]'")
         raise typer.Exit(code=1) from exc
     uvicorn.run("devops_ai_toolkit.api.app:app", host=host, port=port, factory=False)
+
+
+@app.command(name="create-plugin")
+def create_plugin(
+    name: str = typer.Argument(..., help="Plugin name, e.g. 'mycompany-plugin'."),
+    directory: str = typer.Option(".", "--dir", "-d", help="Where to create the project."),
+) -> None:
+    """Scaffold a new, installable third-party plugin project."""
+    path = scaffold_plugin(name, directory)
+    console.print(f"[green]Created plugin project[/green] at [bold]{path}[/bold]")
+    console.print(
+        "\nNext steps:\n"
+        f"  cd {path}\n"
+        "  pip install -e .\n"
+        "  devops-ai plugins list   [dim]# your plugin appears, auto-discovered[/dim]\n"
+        "  edit the plugin module to add your error signatures, then publish.\n"
+    )
 
 
 @app.command()

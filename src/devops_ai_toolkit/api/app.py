@@ -7,8 +7,6 @@ Swagger UI is generated automatically at ``/docs`` and ``/redoc``.
 
 from __future__ import annotations
 
-from functools import lru_cache
-
 from fastapi import Depends, FastAPI
 
 from .._version import __version__
@@ -19,6 +17,8 @@ from ..models.analysis import (
     ExplainResult,
     ValidationResult,
 )
+from .deps import get_engine
+from .plugins import router as plugins_router
 from .schemas import (
     AnalyzeBody,
     ExplainBody,
@@ -39,11 +39,7 @@ app = FastAPI(
     license_info={"name": "MIT"},
 )
 
-
-@lru_cache(maxsize=1)
-def get_engine() -> AnalysisEngine:
-    """Provide a process-wide engine instance (cached)."""
-    return AnalysisEngine()
+app.include_router(plugins_router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["meta"])

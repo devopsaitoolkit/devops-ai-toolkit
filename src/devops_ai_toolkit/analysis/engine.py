@@ -1,7 +1,10 @@
 """The :class:`AnalysisEngine` — every interface calls this and nothing else.
 
-Business logic lives here and only here. The CLI, SDK and REST API are thin
-adapters over this engine, guaranteeing identical behaviour everywhere.
+The engine contains **no technology-specific logic**. It discovers plugins via a
+:class:`~devops_ai_toolkit.plugins.manager.PluginManager`, matches input against
+the signatures those plugins own, and delegates manifest validation to the plugin
+that owns the technology. Adding support for a new technology means installing a
+plugin — never editing this file.
 
 The engine is **read-only**: it inspects text and emits guidance. It never
 executes commands, mutates files, or touches infrastructure.
@@ -11,9 +14,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..analyzers.registry import get_analyzer
 from ..detectors.matcher import SignatureMatcher
-from ..knowledge.loader import KnowledgeBase, load_default_knowledge_base
+from ..knowledge.loader import KnowledgeBase
 from ..models.analysis import (
     AnalysisRequest,
     AnalysisResult,
@@ -24,26 +26,42 @@ from ..models.analysis import (
     Warning,
 )
 from ..models.enums import Severity, SourceKind, Technology
-from ..models.knowledge import Signature, SignatureMatch
+from ..models.knowledge import Signature
+from ..plugins.manager import PluginManager
 from ..prompts.enrichment import ENRICHMENT_SYSTEM_PROMPT, build_enrichment_prompt
 from ..providers.base import AIProvider, CompletionRequest, NullProvider
 from ..providers.registry import get_provider
 from ..utils.config import Settings, get_settings
 from ..utils.logging import get_logger
-from ..utils.text import detect_source_kind, detect_technology, truncate
-from ..validators.service import validate_manifest
+from ..utils.text import (
+    detect_source_kind,
+    detect_technology,
+    technology_for_source_kind,
+    truncate,
+)
+from ..validators.yaml_validator import validate_yaml
+from .assembly import assemble_result, merge_validation
 
 _logger = get_logger(__name__)
 
+_VALIDATABLE = (
+    SourceKind.YAML,
+    SourceKind.KUBERNETES_MANIFEST,
+    SourceKind.TERRAFORM,
+    SourceKind.COMPOSE,
+)
+
 
 class AnalysisEngine:
-    """Stateless, dependency-injected façade over the analysis pipeline.
+    """Stateless, dependency-injected façade over the plugin-driven pipeline.
 
     Args:
-        knowledge_base: Signatures to match against. Defaults to the packaged base.
+        knowledge_base: Override the aggregate signature set (mainly for tests).
         provider: AI provider for optional enrichment. Defaults to the configured
             one (offline ``NullProvider`` when nothing is set up).
         settings: Resolved runtime settings. Defaults to environment-derived.
+        plugin_manager: Source of plugins. Defaults to auto-discovery of all
+            built-in and installed third-party plugins.
     """
 
     def __init__(
@@ -51,10 +69,12 @@ class AnalysisEngine:
         knowledge_base: KnowledgeBase | None = None,
         provider: AIProvider | None = None,
         settings: Settings | None = None,
+        plugin_manager: PluginManager | None = None,
     ) -> None:
         """Wire the engine's collaborators, all overridable for testing."""
         self.settings = settings or get_settings()
-        self.knowledge_base = knowledge_base or load_default_knowledge_base()
+        self.plugins = plugin_manager or PluginManager.create_default()
+        self.knowledge_base = knowledge_base or self.plugins.aggregate_knowledge_base()
         self.provider = provider or get_provider(settings=self.settings)
         self._matcher = SignatureMatcher(self.knowledge_base)
 
@@ -69,11 +89,19 @@ class AnalysisEngine:
         source_kind = request.source_kind or detect_source_kind(content, request.filename)
 
         matches = self._matcher.match(content, technology)
-        result = self._build_result(content, technology, source_kind, matches, request)
+        result = assemble_result(
+            matches=matches,
+            technology=technology,
+            source_kind=source_kind,
+            max_root_causes=request.max_root_causes,
+            signatures_evaluated=len(self.knowledge_base),
+        )
 
-        analyzer = get_analyzer(source_kind, technology)
-        if analyzer is not None:
-            result = analyzer.augment(result, content)
+        # Delegate structural validation to the plugin that owns the technology.
+        if source_kind in _VALIDATABLE:
+            plugin = self.plugins.plugin_for_technology(technology)
+            if plugin is not None:
+                merge_validation(result, plugin.validate(content, filename=request.filename))
 
         if request.enrich:
             result = self._maybe_enrich(result, content)
@@ -152,90 +180,21 @@ class AnalysisEngine:
         source_kind: SourceKind | None = None,
         filename: str | None = None,
     ) -> ValidationResult:
-        """Validate a manifest (YAML / Kubernetes / Terraform). Read-only."""
-        return validate_manifest(
-            content, technology=technology, source_kind=source_kind, filename=filename
+        """Validate a manifest by delegating to the owning plugin (read-only)."""
+        tech = technology or detect_technology(content, filename)
+        kind = source_kind or detect_source_kind(content, filename)
+        if tech is Technology.UNKNOWN:
+            tech = technology_for_source_kind(kind) or tech
+        plugin = self.plugins.plugin_for_technology(tech) or self.plugins.plugin_for(
+            content, technology=tech, source_kind=kind, filename=filename
         )
+        if plugin is not None:
+            return plugin.validate(content, filename=filename)
+        return validate_yaml(content)
 
     # ------------------------------------------------------------------ #
     # Internals                                                          #
     # ------------------------------------------------------------------ #
-
-    def _build_result(
-        self,
-        content: str,
-        technology: Technology,
-        source_kind: SourceKind,
-        matches: list[SignatureMatch],
-        request: AnalysisRequest,
-    ) -> AnalysisResult:
-        """Assemble an :class:`AnalysisResult` from ranked signature matches."""
-        root_causes: list[RootCause] = []
-        diagnostic_commands = []
-        suggested_fixes = []
-        references = []
-        warnings = []
-        best_practices: list[str] = []
-        prevention: list[str] = []
-        matched_ids: list[str] = []
-
-        for match in matches:
-            sig = match.signature
-            matched_ids.append(sig.id)
-            for cause in sig.root_causes:
-                # Blend the signature's match score with the cause's own prior.
-                blended = round(min(0.5 * match.score + 0.5 * cause.confidence, 1.0), 4)
-                root_causes.append(
-                    RootCause(
-                        title=cause.title,
-                        description=cause.description,
-                        confidence=blended,
-                        category=cause.category,
-                        evidence=match.evidence,
-                    )
-                )
-            diagnostic_commands.extend(sig.diagnostic_commands)
-            suggested_fixes.extend(sig.suggested_fixes)
-            references.extend(sig.references)
-            warnings.extend(sig.warnings)
-            best_practices.extend(sig.best_practices)
-            prevention.extend(sig.prevention)
-
-        root_causes.sort(key=lambda rc: rc.confidence, reverse=True)
-        root_causes = root_causes[: request.max_root_causes]
-
-        summary = self._summarise(technology, root_causes)
-        return AnalysisResult(
-            summary=summary,
-            technology=technology,
-            source_kind=source_kind,
-            signatures_matched=matched_ids,
-            root_causes=root_causes,
-            diagnostic_commands=_dedupe_commands(diagnostic_commands),
-            suggested_fixes=suggested_fixes,
-            references=_dedupe_references(references),
-            warnings=warnings,
-            best_practices=_dedupe_str(best_practices),
-            prevention=_dedupe_str(prevention),
-            metadata={
-                "engine": "deterministic",
-                "signatures_evaluated": str(len(self.knowledge_base)),
-            },
-        )
-
-    @staticmethod
-    def _summarise(technology: Technology, root_causes: list[RootCause]) -> str:
-        """Produce a one-line human summary of the analysis."""
-        if not root_causes:
-            return (
-                f"No known {technology} error signature matched. The input was read but "
-                "did not match a catalogued pattern. Review it manually or enable AI enrichment."
-            )
-        top = root_causes[0]
-        return (
-            f"Most likely cause ({top.confidence_percent}% confidence): {top.title}. "
-            f"{len(root_causes)} candidate cause(s) identified for {technology}."
-        )
 
     def _maybe_enrich(self, result: AnalysisResult, raw_input: str) -> AnalysisResult:
         """Attach LLM narrative when a provider is available; otherwise no-op."""
@@ -310,36 +269,3 @@ def _split_enrichment(text: str) -> tuple[str, list[str]]:
         elif stripped:
             narrative_lines.append(stripped)
     return " ".join(narrative_lines).strip(), extras
-
-
-def _dedupe_commands(commands: list) -> list:  # type: ignore[type-arg]
-    """Remove duplicate diagnostic commands, preserving order."""
-    seen: set[str] = set()
-    out = []
-    for cmd in commands:
-        if cmd.command not in seen:
-            seen.add(cmd.command)
-            out.append(cmd)
-    return out
-
-
-def _dedupe_references(references: list) -> list:  # type: ignore[type-arg]
-    """Remove duplicate references by URL, preserving order."""
-    seen: set[str] = set()
-    out = []
-    for ref in references:
-        if ref.url not in seen:
-            seen.add(ref.url)
-            out.append(ref)
-    return out
-
-
-def _dedupe_str(items: list[str]) -> list[str]:
-    """Remove duplicate strings, preserving order."""
-    seen: set[str] = set()
-    out: list[str] = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            out.append(item)
-    return out

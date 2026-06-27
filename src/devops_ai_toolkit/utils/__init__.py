@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from .config import Settings, get_settings
 from .logging import get_logger
-from .text import detect_source_kind, detect_technology, truncate
+from .text import (
+    detect_source_kind,
+    detect_technology,
+    technology_for_source_kind,
+    truncate,
+)
 
 __all__ = [
     "Settings",
@@ -12,5 +17,6 @@ __all__ = [
     "detect_technology",
     "get_logger",
     "get_settings",
+    "technology_for_source_kind",
     "truncate",
 ]

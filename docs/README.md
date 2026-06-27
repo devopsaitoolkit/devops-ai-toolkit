@@ -40,6 +40,13 @@ devops-ai explain CrashLoopBackOff
 - [Use cases](use-cases.md) — real workflows
 - [Examples](examples.md) — copy-pasteable snippets
 
+### Plugins
+- [Plugins](plugins.md) — the plugin architecture: the `AnalyzerPlugin` interface, discovery, lifecycle, and CLI/REST
+- [Plugin development](plugin-development.md) — scaffold, test, package, and publish a plugin
+- [Plugin marketplace](plugin-marketplace.md) — the `PluginMetadata` schema and the registry vision
+- [Enterprise plugins](enterprise-plugins.md) — private, signed, offline, and pinned plugins; the trust model
+- [LLM providers](llm-providers.md) — the provider plugin point (Anthropic/OpenAI/Gemini/Azure/Ollama/null)
+
 ### Understanding it
 - [Architecture](architecture.md) — clean architecture and the shared engine
 - [Knowledge base](knowledge-base.md) — how signatures work and how to add one

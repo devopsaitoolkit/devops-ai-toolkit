@@ -1,0 +1,94 @@
+- id: linstor.satellite_offline
+  technology: linstor
+  title: "LINSTOR satellite node OFFLINE"
+  summary: >-
+    A LINSTOR satellite node shows as OFFLINE to the controller, so resources on
+    that node cannot be created, resized, or made primary.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Satellite.*(OFFLINE|not connected)"
+      - "Node:.*OFFLINE"
+      - "connection to satellite .* lost"
+    weight: 0.72
+  root_causes:
+    - title: "linstor-satellite service is not running"
+      description: "The satellite daemon is stopped or crashed on the node."
+      confidence: 0.6
+      category: service
+    - title: "Network/firewall blocks the controller-satellite port (3366/3367)"
+      description: "The controller cannot reach the satellite's plain/SSL port."
+      confidence: 0.5
+      category: network
+    - title: "Version skew between controller and satellite"
+      description: "Incompatible LINSTOR versions prevent the nodes from connecting."
+      confidence: 0.35
+      category: configuration
+  diagnostic_commands:
+    - command: "linstor node list"
+      explanation: "Shows each node's connection status and address."
+      expected_output: "The affected node in OFFLINE state."
+    - command: "systemctl status linstor-satellite"
+      explanation: "Checks whether the satellite daemon is running on the node."
+      expected_output: "active (running) when healthy."
+    - command: "ss -ltnp | grep -E '3366|3367'"
+      explanation: "Confirms the satellite is listening on its control ports."
+      expected_output: "A LISTEN socket on 3366 (plain) or 3367 (SSL)."
+  suggested_fixes:
+    - title: "Restore the satellite connection"
+      description: >-
+        Confirm linstor-satellite is running, open ports 3366/3367 between
+        controller and satellite, and align LINSTOR versions across nodes.
+  references:
+    - title: "LINSTOR User Guide"
+      url: "https://linbit.com/drbd-user-guide/linstor-guide-1_0-en/"
+      source: "official docs"
+  best_practices:
+    - "Keep controller and satellite on matching LINSTOR versions."
+  prevention:
+    - "Monitor node connection state and alert on OFFLINE transitions."
+  tags: [linstor, drbd, satellite, storage]
+
+- id: linstor.no_active_connection_resource
+  technology: linstor
+  title: "LINSTOR: 'Not enough available nodes' / resource placement failed"
+  summary: >-
+    LINSTOR cannot place a resource because too few eligible nodes have the
+    required storage pool, capacity, or are online.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Not enough available nodes"
+      - "Insufficient (free space|nodes)"
+      - "could not find .* storage pool"
+    weight: 0.7
+  root_causes:
+    - title: "Storage pool missing or full on candidate nodes"
+      description: "The named storage pool does not exist or lacks free space on enough nodes."
+      confidence: 0.6
+      category: capacity
+    - title: "Replica count exceeds the number of eligible online nodes"
+      description: "Requested placement count is higher than available healthy nodes."
+      confidence: 0.45
+      category: configuration
+  diagnostic_commands:
+    - command: "linstor storage-pool list"
+      explanation: "Shows per-node storage pools and free capacity."
+      expected_output: "Free space and pool presence on each node."
+    - command: "linstor resource-group list"
+      explanation: "Shows the placement count and constraints for the resource group."
+      expected_output: "The configured replica/placement count."
+  suggested_fixes:
+    - title: "Add capacity or lower the placement count"
+      description: >-
+        Extend the storage pool, bring more nodes online, or reduce the replica
+        count to match available eligible nodes.
+  references:
+    - title: "LINSTOR User Guide"
+      url: "https://linbit.com/drbd-user-guide/linstor-guide-1_0-en/"
+      source: "official docs"
+  best_practices:
+    - "Size storage pools with headroom for replicas and growth."
+  prevention:
+    - "Alert on storage-pool free space dropping below the replica requirement."
+  tags: [linstor, placement, storage, capacity]

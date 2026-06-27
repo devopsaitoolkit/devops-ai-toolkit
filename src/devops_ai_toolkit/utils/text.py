@@ -20,7 +20,7 @@ _TECH_SIGNALS: list[tuple[Technology, str]] = [
     (Technology.OPENSHIFT, r"\b(oc adm|openshift|securitycontextconstraints|scc)\b"),
     (
         Technology.TERRAFORM,
-        r"(terraform\s+(apply|plan|init)|Error: .*provider|resource\s+\"[a-z_]+\"\s+\")",
+        r"(terraform\s+(apply|plan|init)|Error: .*provider|resource\s+\"[a-z0-9_]+\"\s+\")",
     ),
     (Technology.ANSIBLE, r"(ansible-playbook|TASK \[|fatal:.*=>|gather_facts)"),
     (Technology.DOCKER_COMPOSE, r"(docker-compose|services:\s*$|compose\.ya?ml)"),
@@ -82,6 +82,18 @@ def detect_source_kind(text: str, filename: str | None = None) -> SourceKind:
     if "\n" not in text.strip():
         return SourceKind.ERROR_STRING
     return SourceKind.LOG
+
+
+def technology_for_source_kind(kind: SourceKind) -> Technology | None:
+    """Map an input shape to the technology that owns it, for validation routing.
+
+    This is generic input classification (not analysis logic): a Terraform file is
+    owned by the Terraform plugin, a Kubernetes manifest by the Kubernetes plugin.
+    """
+    return {
+        SourceKind.TERRAFORM: Technology.TERRAFORM,
+        SourceKind.KUBERNETES_MANIFEST: Technology.KUBERNETES,
+    }.get(kind)
 
 
 def truncate(text: str, limit: int) -> str:

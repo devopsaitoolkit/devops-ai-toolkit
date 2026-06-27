@@ -1,0 +1,101 @@
+- id: vmware.insufficient_resources_ha
+  technology: vmware
+  title: "vSphere: 'Insufficient resources to satisfy configured failover'"
+  summary: >-
+    vSphere HA cannot guarantee failover capacity, or a VM cannot power on
+    because the cluster/host lacks the CPU or memory the admission control needs.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Insufficient resources to satisfy (configured failover|HA)"
+      - "Insufficient resources to satisfy vSphere HA"
+      - "failed to power on .* insufficient"
+    weight: 0.72
+  root_causes:
+    - title: "HA admission control reserves more capacity than is free"
+      description: >-
+        The cluster's failover capacity policy reserves resources that the
+        current load no longer leaves available, blocking power-on.
+      confidence: 0.6
+      category: capacity
+    - title: "Host failures reduced usable capacity"
+      description: "One or more hosts are down/maintenance, shrinking cluster capacity."
+      confidence: 0.5
+      category: availability
+    - title: "Oversized VM reservations"
+      description: "A VM's CPU/memory reservation cannot be satisfied by any single host."
+      confidence: 0.4
+      category: configuration
+  diagnostic_commands:
+    - command: "esxcli system maintenanceMode get"
+      explanation: "Checks whether the host is in maintenance mode (read-only)."
+      expected_output: "'Disabled' when the host should be serving workloads."
+    - command: "esxcli vm process list"
+      explanation: "Lists running VMs and their world IDs on the host."
+      expected_output: "The set of powered-on VMs consuming capacity."
+  suggested_fixes:
+    - title: "Free capacity or relax admission control"
+      description: >-
+        Bring hosts out of maintenance, migrate or right-size VM reservations,
+        or adjust the HA admission control policy to match real capacity.
+  references:
+    - title: "vSphere Availability (HA) documentation"
+      url: "https://docs.vmware.com/en/VMware-vSphere/index.html"
+      source: "official docs"
+  warnings:
+    - message: "Relaxing HA admission control reduces guaranteed failover capacity."
+      severity: medium
+  best_practices:
+    - "Size clusters with enough headroom for at least one host failure."
+  prevention:
+    - "Review HA admission control after adding or removing hosts."
+  tags: [vmware, vsphere, ha, capacity]
+
+- id: vmware.cannot_connect_esxi_host
+  technology: vmware
+  title: "vCenter: host 'Not Responding' / cannot connect to ESXi"
+  summary: >-
+    vCenter shows an ESXi host as Not Responding or Disconnected and management
+    operations on it fail.
+  applies_to: [log, command_output, error_string]
+  match:
+    any_of:
+      - "Not Responding"
+      - "host .* is disconnected"
+      - "Cannot (contact|connect to) .* host"
+      - "vpxa"
+    weight: 0.68
+  root_causes:
+    - title: "Management agents (hostd/vpxa) are unresponsive"
+      description: "The ESXi management agents have hung and need a restart."
+      confidence: 0.55
+      category: service
+    - title: "Network partition between vCenter and the host"
+      description: "Management network or firewall changes broke connectivity (port 902/443)."
+      confidence: 0.5
+      category: network
+    - title: "Host resource exhaustion"
+      description: "The host ran out of memory/CPU for management, dropping the connection."
+      confidence: 0.35
+      category: capacity
+  diagnostic_commands:
+    - command: "ping <esxi-mgmt-ip>"
+      explanation: "Confirms basic network reachability of the host management interface."
+      expected_output: "Replies when the management network is intact."
+    - command: "esxcli network ip connection list | grep -E '902|443'"
+      explanation: "Checks the management ports vCenter uses to reach the host (read-only)."
+      expected_output: "ESTABLISHED/LISTEN entries on 902/443."
+  suggested_fixes:
+    - title: "Restore host management connectivity"
+      description: >-
+        Verify the management network and firewall, then restart the ESXi
+        management agents if they are hung (services.sh restart) from the host console.
+  references:
+    - title: "VMware ESXi troubleshooting documentation"
+      url: "https://docs.vmware.com/en/VMware-vSphere/index.html"
+      source: "official docs"
+  best_practices:
+    - "Redundant management NICs reduce host-isolation events."
+  prevention:
+    - "Monitor hostd/vpxa health and management-network reachability."
+  tags: [vmware, vsphere, esxi, vcenter, network]
